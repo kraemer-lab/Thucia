@@ -9,13 +9,13 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.9
+    rev: v0.16.6
     hooks:
       - id: ruff
       - id: ruff-format
         require_serial: true
   - repo: https://github.com/asottile/reorder-python-imports
-    rev: v3.16.0
+    rev: v3.17.0
     hooks:
       - id: reorder-python-imports
         require_serial: true

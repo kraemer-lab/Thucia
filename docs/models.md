@@ -9,7 +9,7 @@ List the available models and resolve one by name:
 ```python
 from thucia.core import list_models, get_model
 
-print(list_models())       # all advertised model names
+print(list_models())  # all advertised model names
 model = get_model("sarima")  # resolve the callable
 ```
 

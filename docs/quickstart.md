@@ -14,13 +14,13 @@ import pandas as pd
 from thucia.core import PipelineConfig
 
 cfg = PipelineConfig(
-    path="my_run",                                    # output directory
+    path="my_run",  # output directory
     start_date=pd.Period("2019-01", freq="M"),
     train_end_date=pd.Period("2018-12", freq="M"),
     horizons=[1, 3, 6],
     num_samples=50,
     future_periods=12,
-    source_specs=["worldclim.*"],                     # covariates to merge
+    source_specs=["worldclim.*"],  # covariates to merge
 )
 
 # cfg.path is created automatically
@@ -95,8 +95,8 @@ result = run_backtest(
     BacktestConfig(model_name="baseline", min_history=3, step=1),
 )
 
-print(result.summary)          # per-horizon mean WIS / RMSE / R2
-print(result.scores.head())    # per (cutoff, region, date, horizon)
+print(result.summary)  # per-horizon mean WIS / RMSE / R2
+print(result.scores.head())  # per (cutoff, region, date, horizon)
 ```
 
 By default backtesting refuses models that are not "fast" (only `baseline` and
@@ -114,7 +114,7 @@ from thucia.core import load_case_source
 
 source = load_case_source("infodengue", iso3="BRA", states=["Rondônia"])
 df = source.fetch(disease="zika", align=False)
-print(df.head())               # ADM1, ADM2, Date, Cases
+print(df.head())  # ADM1, ADM2, Date, Cases
 ```
 
 See {doc}`case-sources` for the full parameter list.
