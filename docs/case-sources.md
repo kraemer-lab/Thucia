@@ -10,7 +10,7 @@ disease is always a parameter, never hard-coded in a driver.
 ```python
 from thucia.core import load_case_source, load_sources
 
-load_sources()   # import every driver so the registry is populated
+load_sources()  # import every driver so the registry is populated
 src = load_case_source("infodengue", iso3="BRA")
 df = src.fetch(disease="dengue")
 ```
