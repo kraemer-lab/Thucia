@@ -28,12 +28,12 @@ DuckDB table** — columns, index subsets, and boolean filters are pushed down a
 SQL rather than materialising the whole frame in memory.
 
 ```python
-tdf["Log_Cases"]                 # SELECT one column (lazy)
-tdf[["GID_2", "Cases"]]          # SELECT a subset of columns
-tdf.head(10)                     # first rows
-tdf.query("Cases > 100")         # arbitrary SQL filter
-len(tdf)                         # SELECT COUNT(*)
-tdf.columns                      # column names
+tdf["Log_Cases"]  # SELECT one column (lazy)
+tdf[["GID_2", "Cases"]]  # SELECT a subset of columns
+tdf.head(10)  # first rows
+tdf.query("Cases > 100")  # arbitrary SQL filter
+len(tdf)  # SELECT COUNT(*)
+tdf.columns  # column names
 
 # Materialise the whole table as a pandas DataFrame (restores Period dtypes).
 pandas_df = tdf.df
@@ -58,7 +58,7 @@ their metadata recorded in a `__column_metadata__` table, and restored to their
 categories must already be present from the first write.
 
 ```python
-tdf.append(new_rows)   # all GID categories must exist from the first write
+tdf.append(new_rows)  # all GID categories must exist from the first write
 ```
 
 ## NetCDF / Zarr
@@ -70,7 +70,7 @@ preserve period columns automatically:
 from thucia.core import write_nc, read_nc, write_zarr, read_zarr
 
 write_nc(df, "cases.nc")
-back = read_nc("cases.nc")          # Period Date column restored
+back = read_nc("cases.nc")  # Period Date column restored
 ```
 
 `write_nc` / `write_zarr` accept either a pandas DataFrame or an xarray
