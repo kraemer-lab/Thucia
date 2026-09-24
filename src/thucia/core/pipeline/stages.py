@@ -35,7 +35,17 @@ from thucia.core.models.utils.covariates import build_features
 
 from .config import PipelineConfig
 
-BASE_COLUMNS = ("Date", "GID_1", "GID_2", "future", "Cases")
+
+def base_columns(config: PipelineConfig) -> tuple[str, ...]:
+    """Columns that are structural, not covariates.
+
+    ``Date``, the geo column, ``future`` and ``Cases`` are always base; the
+    geo-parent column is included only when the config declares one.
+    """
+    cols = ["Date", config.geo_col, "future", "Cases"]
+    if config.geo_parent:
+        cols.insert(1, config.geo_parent)
+    return tuple(cols)
 
 
 def cases_per_period(
@@ -52,7 +62,12 @@ def cases_per_period(
         tdf = cases_per_month(df, cutoff_date=config.cutoff_date)
     else:
         tdf = aggregate_cases(df, cutoff_date=config.cutoff_date, freq=freq)
-    tdf = pad_admin2(tdf)
+    tdf = pad_admin2(
+        tdf,
+        geo_col=config.geo_col,
+        geo_parent=config.geo_parent or "GID_1",
+        iso3=config.iso3,
+    )
 
     last_date = tdf["Date"].max()
     future_dates = pd.period_range(
@@ -69,7 +84,7 @@ def cases_per_period(
         future["Cases"] = np.nan
         future["future"] = True
         out = pd.concat([out, future], ignore_index=True)
-    return out.sort_values(by=["Date", "GID_2"]).reset_index(drop=True)
+    return out.sort_values(by=["Date", config.geo_col]).reset_index(drop=True)
 
 
 def merge_covariates(
@@ -82,8 +97,8 @@ def merge_covariates(
         merged = merge_sources(df, [spec], method=config.covariate_interpolation)
         new_cols = [c for c in merged.columns if c not in df.columns]
         out = out.merge(
-            merged[["GID_2", "Date"] + new_cols],
-            on=["GID_2", "Date"],
+            merged[[config.geo_col, "Date"] + new_cols],
+            on=[config.geo_col, "Date"],
             how="left",
         )
     return add_incidence_rate(out)
@@ -109,11 +124,15 @@ def prepare_model_inputs(
         ]
     else:
         covariate_cols = [
-            c for c in out.columns if c not in set(BASE_COLUMNS) | {config.case_col}
+            c
+            for c in out.columns
+            if c not in set(base_columns(config)) | {config.case_col}
         ]
 
     keep = [
-        c for c in [*BASE_COLUMNS, config.case_col] + covariate_cols if c in out.columns
+        c
+        for c in [*base_columns(config), config.case_col] + covariate_cols
+        if c in out.columns
     ]
     out = out[keep]
 
@@ -121,7 +140,7 @@ def prepare_model_inputs(
         out = sanitise_covariates(out, covariate_cols, config.train_end_date)
         check_covars_for_nans(out, covariate_cols)
     check_covars_for_nans(out[~out["future"]], [config.case_col])
-    index_cols = ["Date", "GID_2"] if "GID_2" in out.columns else ["Date", "GID_1"]
+    index_cols = ["Date", config.geo_col] if config.geo_col in out.columns else ["Date"]
     check_index_combinations(out, index_cols)
     return out, covariate_cols
 
@@ -136,19 +155,21 @@ def fit_model(
     """Fit a named model on prepared inputs and return the quantile frame."""
     model = get_model(model_name)
 
-    base_cols = set(BASE_COLUMNS) | {config.case_col}
+    base_cols = set(base_columns(config)) | {config.case_col}
     covariate_cols = [c for c in df.columns if c not in base_cols]
     db_file = db_file or config.path / f"{model_name}_cases_quantiles.duckdb"
 
     model_kwargs: dict[str, Any] = {
         "start_date": config.start_date,
-        "gid_1": (
+        "geo_col": config.geo_col,
+        "geo_parent": config.geo_parent,
+        "geo_parent_filter": (
             lookup_gid1(config.iso3, config.adm1) if config.iso3 else config.adm1
         ),
         "horizons": config.horizons,
         "case_col": config.case_col,
         "covariate_cols": covariate_cols,
-        "model_admin_level": config.model_admin_level,
+        "train_col": config.train_col or config.geo_col,
         "db_file": db_file,
     }
     # Each model declares, via its ModelSpec, which extra config knobs it
@@ -198,20 +219,20 @@ def aggregate_quantiles(
     df_quantiles: pd.DataFrame,
     config: PipelineConfig,
     *,
-    agg_col: str = "GID_1",
-    gid_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+    geo_col: str = "GID_2",
     db_file: str | Path | None = None,
     samples: int = 10000,
 ) -> DataFrame:
-    """Aggregate per-GID quantiles to a coarser admin level (MC sum)."""
+    """Aggregate per-geo quantiles to a coarser admin level (MC sum)."""
     db_file = db_file or config.path / "aggregated_cases_quantiles.duckdb"
     return quantile_sum_gid(
         df_quantiles,
         db_file=str(db_file),
         new_file=True,
         samples=samples,
-        gid_col=gid_col,
-        gid_agg_col=agg_col,
+        geo_col=geo_col,
+        geo_parent=geo_parent,
     )
 
 

@@ -44,7 +44,7 @@ class SarimaQuantiles(DartsBase):
 
     def remove_gid_covariate(self, cov):
         try:
-            cov = cov.drop_columns("GID_2_codes")
+            cov = cov.drop_columns(f"{self.geo_col}_codes")
         except Exception:
             pass
 
@@ -144,13 +144,15 @@ def sarima(
     df: pd.DataFrame,
     start_date: str | pd.Timestamp | pd.Period = pd.Timestamp.min,
     end_date: str | pd.Timestamp | pd.Period = pd.Timestamp.max,
-    gid_1: Optional[List[str]] = None,
+    geo_col: str = "GID_2",
+    geo_parent: Optional[str] = "GID_1",
+    geo_parent_filter: Optional[List[str]] = None,
     horizons: List[int] = [1],
     case_col: str = "Log_Cases",
     covariate_cols: Optional[List[str]] = None,
     retrain: bool = True,  # AutoARIMA at every step
     db_file: str | Path | None = None,
-    model_admin_level: int = 0,  # GID level
+    train_col: Optional[str] = None,
     num_samples: int | None = None,
     multivariate: bool = False,
     season_length: Optional[int] = None,  # None -> auto-detect from freq
@@ -181,7 +183,8 @@ def sarima(
     model = SarimaQuantiles(
         df=df,
         case_col=case_col,
-        geo_col="GID_2" if "GID_2" in df.columns else "GID_1",
+        geo_col=geo_col,
+        geo_parent=geo_parent,
         covariate_cols=covariate_cols,
         horizons=horizons,
         num_samples=num_samples,
@@ -194,7 +197,7 @@ def sarima(
     # Historical predictions
     tdf = model.historical_predictions(
         start_date=start_date,
-        model_admin_level=model_admin_level,
+        train_col=train_col,
     )
     logging.info("Completed SARIMA forecasting pipeline.")
 

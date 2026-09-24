@@ -36,7 +36,9 @@ def sample_to_quantiles_vec(samples, quantiles=quantiles):
 def samples_to_quantiles(
     df: pd.DataFrame,
     quantiles=quantiles,
-    gid_1: list[str] | None = None,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+    geo_parent_filter: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Convert samples in a DataFrame to quantiles using groupby for efficiency.
@@ -52,20 +54,22 @@ def samples_to_quantiles(
                 df_q = samples_to_quantiles(
                     df_h,
                     quantiles=quantiles,
-                    gid_1=gid_1,
+                    geo_col=geo_col,
+                    geo_parent=geo_parent,
+                    geo_parent_filter=geo_parent_filter,
                 )
                 df_q["horizon"] = h
                 df_horizons.append(df_q)
         return pd.concat(df_horizons, ignore_index=True)
 
-    # Admin-1 filter
-    if gid_1 is not None:
-        df = df[df["GID_1"].isin(gid_1)]
+    # Parent-level filter
+    if geo_parent_filter is not None:
+        df = df[df[geo_parent].isin(geo_parent_filter)]
 
     # Group by region and horizon
     results = []
-    for gid2, group in df.groupby("GID_2", observed=True):
-        logging.info(f"Processing region {gid2} for quantiles conversion")
+    for gid, group in df.groupby(geo_col, observed=True):
+        logging.info(f"Processing region {gid} for quantiles conversion")
         group = group.sort_values("Date")  # ensure Date order
         dates = group["Date"].unique()
 
@@ -89,7 +93,7 @@ def samples_to_quantiles(
             results.append(
                 pd.DataFrame(
                     {
-                        "GID_2": gid2,
+                        geo_col: gid,
                         "Date": date,
                         "quantile": quantiles,
                         "prediction": quantile_values,
@@ -102,12 +106,16 @@ def samples_to_quantiles(
     return pd.concat(results, ignore_index=True)
 
 
-def filter_admin1(df: pd.DataFrame, gid_1: str) -> pd.DataFrame:
+def filter_admin1(
+    df: pd.DataFrame,
+    geo_parent_filter: str | list[str] | None = None,
+    geo_parent: str = "GID_1",
+) -> pd.DataFrame:
     """
-    Filter DataFrame by admin-1 region.
+    Filter DataFrame by geo-parent region (e.g. admin-1).
     """
-    if gid_1 is not None:
-        df = df[df["GID_1"].isin(gid_1)]
+    if geo_parent_filter is not None:
+        df = df[df[geo_parent].isin(geo_parent_filter)]
     return df.reset_index(drop=True)
 
 
@@ -142,10 +150,10 @@ def sanitize_dates_inplace(
 
 
 def validate_unique_keys(df: pd.DataFrame, col_names: list[str]) -> None:
-    # Check that all (Date, GID_2) combinations are unique
+    # Check that all (Date, geo unit) combinations are unique
     if df[col_names].duplicated().any():
         raise ValueError(
-            "DataFrame contains duplicate (Date, GID_2) combinations. "
+            "DataFrame contains duplicate (Date, geo unit) combinations. "
             "Ensure that the data is aggregated correctly."
         )
 
@@ -155,7 +163,7 @@ def interpolate_missing_dates(
     start_date: pd.Timestamp | str = pd.Timestamp.min,
     end_date: pd.Timestamp | str = pd.Timestamp.max,
     date_col: str = "Date",
-    gid_col: str = "GID_2",
+    geo_col: str = "GID_2",
 ) -> None:
     # Get date range
     date_range = sanitize_dates_inplace(
@@ -164,13 +172,13 @@ def interpolate_missing_dates(
         start_date=start_date,
         end_date=end_date,
     )
-    validate_unique_keys(df, col_names=[date_col, gid_col])
+    validate_unique_keys(df, col_names=[date_col, geo_col])
 
     # Interpolate missing dates
     multi_index = pd.MultiIndex.from_product(
-        [df[gid_col].unique(), date_range], names=[gid_col, date_col]
+        [df[geo_col].unique(), date_range], names=[geo_col, date_col]
     )
-    df = df.set_index([gid_col, date_col]).reindex(multi_index).reset_index()
+    df = df.set_index([geo_col, date_col]).reindex(multi_index).reset_index()
     return df
 
 
@@ -196,10 +204,14 @@ def set_historical_na_to_zero(
 
 
 def pca_transform(
-    df, covariate_cols, keep_components: Optional[int] = 5, case_col="Cases"
+    df,
+    covariate_cols,
+    keep_components: Optional[int] = 5,
+    case_col="Cases",
+    geo_col: str = "GID_2",
 ):
     # PCA transform covariates and project to fewer dimensions
-    df_covs = df[["Date", "GID_2"] + covariate_cols].copy()
+    df_covs = df[["Date", geo_col] + covariate_cols].copy()
     logging.info("Fit PCA")
     pca = PCA(n_components=min(keep_components, len(covariate_cols)))
     logging.info("Transform covariates by PCA")
@@ -207,11 +219,11 @@ def pca_transform(
     df = df.drop(columns=covariate_cols)
     covariate_cols = [f"PC{i + 1}" for i in range(covs_transformed.shape[1])]
     df[covariate_cols] = covs_transformed
-    df = df[["Date", "GID_2", "future", "Cases", case_col] + covariate_cols]
+    df = df[["Date", geo_col, "future", "Cases", case_col] + covariate_cols]
     return df
 
 
-def sanitise_covariates(df, covariate_cols, start_date, gid_col="GID_2"):
+def sanitise_covariates(df, covariate_cols, start_date, geo_col="GID_2"):
     if isinstance(start_date, str):
         start_date = pd.to_datetime(start_date)
     if isinstance(start_date, pd.Timestamp):
@@ -223,10 +235,10 @@ def sanitise_covariates(df, covariate_cols, start_date, gid_col="GID_2"):
     # Covariate sanitisation
     for c in covariate_cols:
         # NaN replacement: seasonal mean, forward and back fill
-        df[c] = df.groupby([gid_col, df["Date"].dt.month], observed=False)[c].transform(
+        df[c] = df.groupby([geo_col, df["Date"].dt.month], observed=False)[c].transform(
             lambda s: s.fillna(s.mean())
         )
-        df[c] = df.groupby(gid_col, observed=False)[c].ffill().bfill()
+        df[c] = df.groupby(geo_col, observed=False)[c].ffill().bfill()
         # Standardise using pre- start date values
         mask = df["Date"] < start_date
         if False:
@@ -247,27 +259,31 @@ def sanitise_covariates(df, covariate_cols, start_date, gid_col="GID_2"):
 def aggregate_to_admin1(
     df: pd.DataFrame,
     weight_col: None,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
 ):
-    # Aggregate to admin-1 level by summing Cases and averaging covariates
-    df = df.drop(columns=["GID_2"])
+    # Aggregate to geo-parent level (e.g. admin-1) by summing Cases and averaging covariates
+    df = df.drop(columns=[geo_col])
     # Weight covars
     if weight_col:
-        df["weight"] = df.groupby(["Date", "GID_1"])[weight_col].transform(
+        df["weight"] = df.groupby(["Date", geo_parent])[weight_col].transform(
             lambda x: x / x.sum()
         )
-        covars = df.columns.difference(["Date", "GID_1", "Cases", "future", "weight"])
+        covars = df.columns.difference(
+            ["Date", geo_parent, "Cases", "future", "weight"]
+        )
         for c in covars:
             df[c] = df[c] * df["weight"]
 
     df = (
-        df.groupby(["Date", "GID_1"], observed=True)
+        df.groupby(["Date", geo_parent], observed=True)
         .agg(
             Cases=("Cases", "sum"),
             future=("future", "first"),
             **{
                 c: (c, "sum")
                 for c in df.columns
-                if c not in ["Date", "GID_1", "Cases", "future"]
+                if c not in ["Date", geo_parent, "Cases", "future"]
             },
         )
         .reset_index()

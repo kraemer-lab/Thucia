@@ -234,7 +234,7 @@ def test_aggregate_quantiles(tmp_path):
                 )
     df = pd.DataFrame(rows)
     cfg = PipelineConfig(path=tmp_path, horizons=[1])
-    out = aggregate_quantiles(df, cfg, agg_col="GID_1", gid_col="GID_2", samples=200)
+    out = aggregate_quantiles(df, cfg, geo_parent="GID_1", geo_col="GID_2", samples=200)
     frame = out.df
     assert set(frame["GID_1"].unique()) == {"G.1_1"}
     assert frame["prediction"].notna().all()

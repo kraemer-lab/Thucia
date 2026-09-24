@@ -34,7 +34,7 @@ def aggregate_cases(
     statuses: list[str] | None = None,
     cases_col: str = "Cases",
     cutoff_date: pd.Timestamp | str | None = None,
-    fill_column: str | None = "GID_2",
+    geo_col: str | None = "GID_2",
     freq: str = "M",
 ) -> pd.DataFrame:
     """
@@ -48,8 +48,8 @@ def aggregate_cases(
         Subset of Status values to include.
     cases_col : str, optional
     cutoff_date : str, optional
-    fill_column : str, optional
-        If provided, will fill missing Dates, grouped by 'fill_column'.
+    geo_col : str, optional
+        If provided, will fill missing Dates, grouped by 'geo_col'.
     freq: str
         Resampling period for dates. Default is 'M' (month end). Typical options:
         - 'M': Month end
@@ -104,18 +104,14 @@ def aggregate_cases(
         df["Date"] = pd.to_datetime(df["Date"]).dt.to_period(freq)
 
     # Prepare columns to group by (exclude Status)
-    group_cols = ["Date", "GID_2"]  # df.columns.tolist()
-    gid2_to_gid1 = dict(zip(df["GID_2"], df["GID_1"]))
-    if "Status" in group_cols:
-        group_cols.remove("Status")
+    group_cols = ["Date", geo_col]
 
     # Group and count cases
     if cases_col not in df.columns:
         df[cases_col] = 1
     grouped = df.groupby(group_cols, as_index=False, observed=False)[cases_col].sum()
-    grouped["GID_1"] = grouped["GID_2"].map(gid2_to_gid1)
 
-    if fill_column is None:
+    if geo_col is None:
         return grouped.sort_values(by="Date").reset_index(drop=True)
 
     # Build full date range
@@ -125,42 +121,38 @@ def aggregate_cases(
         freq=df["Date"].dtype.freq,
     )
 
-    if fill_column not in group_cols:
-        raise ValueError(
-            f"Expected '{fill_column}' column in DataFrame for full coverage."
-        )
+    if geo_col not in group_cols:
+        raise ValueError(f"Expected '{geo_col}' column in DataFrame for full coverage.")
 
-    unique_fill_values = df[fill_column].unique()
+    unique_fill_values = df[geo_col].unique()
 
-    # Full grid of all fill_column x Date combos
+    # Full grid of all geo_col x Date combos
     full_grid = pd.DataFrame(
-        list(product(unique_fill_values, full_periods)), columns=[fill_column, "Date"]
+        list(product(unique_fill_values, full_periods)), columns=[geo_col, "Date"]
     )
 
     # Merge grouped counts onto full grid
-    result = pd.merge(full_grid, grouped, on=[fill_column, "Date"], how="left")
+    result = pd.merge(full_grid, grouped, on=[geo_col, "Date"], how="left")
 
     # Fill cases_col with zeros where missing
     result[cases_col] = result[cases_col].fillna(0).astype(int)
 
-    # Identify descriptive columns to fill (all except fill_column, Date, cases_col, and Status)
+    # Identify descriptive columns to fill (all except geo_col, Date, cases_col, and Status)
     descriptive_cols = [
-        col
-        for col in df.columns
-        if col not in [fill_column, "Date", cases_col, "Status"]
+        col for col in df.columns if col not in [geo_col, "Date", cases_col, "Status"]
     ]
 
-    # For each descriptive column, build a mapping from fill_column to the unique value,
+    # For each descriptive column, build a mapping from geo_col to the unique value,
     # then map/fill in the result
     for col in descriptive_cols:
-        # Get unique mapping from fill_column to col value (assumes 1 unique value per fill_column)
-        mapping = df.drop_duplicates(subset=[fill_column])[
-            [fill_column, col]
-        ].set_index(fill_column)[col]
-        result[col] = result[fill_column].map(mapping)
+        # Get unique mapping from geo_col to col value (assumes 1 unique value per geo_col)
+        mapping = df.drop_duplicates(subset=[geo_col])[[geo_col, col]].set_index(
+            geo_col
+        )[col]
+        result[col] = result[geo_col].map(mapping)
 
     # Sort results
-    result = result.sort_values(by=["Date", fill_column]).reset_index(drop=True)
+    result = result.sort_values(by=["Date", geo_col]).reset_index(drop=True)
 
     # Check case counts match
     outgoing_case_count = result[cases_col].sum()
@@ -473,7 +465,7 @@ def quantile_sum_fast(
     date,
     gids,
     horizon,
-    gid_col="GID_1",
+    geo_col="GID_2",
     N=50000,
     mode="independent",
     rho=0.3,
@@ -490,7 +482,7 @@ def quantile_sum_fast(
       - optional reuse of shared_draws (dict from prepare_shared_draws)
 
     Parameters:
-      - df: quantiles table (columns: Date, gid_col, horizon, quantile, prediction)
+      - df: quantiles table (columns: Date, geo_col, horizon, quantile, prediction)
       - date, gids, horizon: filters
       - mode: "independent" | "comonotonic" | "copula"
       - shared_draws: optional dict with keys 'N', 'S', 'E', 'U' prepared for a large k_max.
@@ -507,7 +499,7 @@ def quantile_sum_fast(
     vals_list = []
     for gid in gids:
         g = df[
-            (df.Date == date) & (df[gid_col] == gid) & (df.horizon == horizon)
+            (df.Date == date) & (df[geo_col] == gid) & (df.horizon == horizon)
         ].sort_values("quantile")
         if g.shape[0] == 0:
             raise ValueError(
@@ -626,7 +618,7 @@ def quantile_sum_fast(
     )
 
 
-# --- top-level function that iterates over GID_1 groups and reuses shared draws ---
+# --- top-level function that iterates over geo_parent groups and reuses shared draws ---
 def quantile_sum_gid(
     df,
     db_file: str,
@@ -637,11 +629,11 @@ def quantile_sum_gid(
     quantiles=None,
     rho=0.3,
     seed_base: int = 3,
-    gid_col: str = "GID_2",
-    gid_agg_col: str = "GID_1",
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
 ):
     """
-    Process all gid_agg_col groups in df and append aggregated quantiles to a database
+    Process all geo_parent groups in df and append aggregated quantiles to a database
     backing store (DataFrame(db_file=...)).
 
       - Prepares shared draws (S,E and U) once using the maximum k across groups,
@@ -650,7 +642,7 @@ def quantile_sum_gid(
       - Keeps identical API for output and merges Cases/Log_Cases as before.
 
     Parameters:
-      - df: input long quantiles dataframe with columns Date, gid_agg_col, gid_col,
+      - df: input long quantiles dataframe with columns Date, geo_parent, geo_col,
             horizon, quantile, prediction, Cases
       - db_file, new_file: storage for results (DataFrame wrapper assumed)
       - samples: number of Monte Carlo samples to use (N)
@@ -667,17 +659,17 @@ def quantile_sum_gid(
 
     tdf = DataFrame(db_file=db_file, new_file=new_file)
 
-    # Determine max number of gid_col across all gid_agg_col (k_max) to prepare shared draws
-    gid1s = df[gid_agg_col].unique()
+    # Determine max number of geo_col across all geo_parent (k_max) to prepare shared draws
+    parents = df[geo_parent].unique()
     max_k = 0
-    gid2_counts = {}
-    for gid1 in gid1s:
-        cnt = df[df[gid_agg_col] == gid1][gid_col].nunique()
-        gid2_counts[gid1] = int(cnt)
+    parent_counts = {}
+    for parent in parents:
+        cnt = df[df[geo_parent] == parent][geo_col].nunique()
+        parent_counts[parent] = int(cnt)
         if cnt > max_k:
             max_k = int(cnt)
     if max_k == 0:
-        logging.warning(f"No {gid_col} groups found in df; nothing to process.")
+        logging.warning(f"No {geo_col} groups found in df; nothing to process.")
         return tdf
 
     # Prepare shared draws for reuse: both copula and independent available
@@ -685,27 +677,27 @@ def quantile_sum_gid(
         k_max=max_k, N=samples, seed=seed_base, dtype=dtype, mode="both"
     )
 
-    # Process each gid_agg_col
-    for gid1 in gid1s:
-        logging.info(f"Processing {gid_agg_col}={gid1}")
-        df_gid1 = df[df[gid_agg_col] == gid1]
-        gids = df_gid1[gid_col].unique()
+    # Process each geo_parent
+    for parent in parents:
+        logging.info(f"Processing {geo_parent}={parent}")
+        df_parent = df[df[geo_parent] == parent]
+        gids = df_parent[geo_col].unique()
         # use slice of shared_draws for this group
         # (quantile_sum_fast will slice shared_draws internally)
-        horizons = df_gid1["horizon"].unique()
+        horizons = df_parent["horizon"].unique()
         for horizon in horizons:
-            dates = df_gid1["Date"].unique()
+            dates = df_parent["Date"].unique()
             for date in dates:
                 logging.info(
-                    f"Processing {gid_agg_col}={gid1}, horizon={horizon}, date={date}"
+                    f"Processing {geo_parent}={parent}, horizon={horizon}, date={date}"
                 )
                 try:
                     entry = quantile_sum_fast(
-                        df=df_gid1,
+                        df=df_parent,
                         date=date,
                         gids=gids,
                         horizon=horizon,
-                        gid_col=gid_col,
+                        geo_col=geo_col,
                         N=samples,
                         mode="copula",
                         rho=rho,
@@ -716,14 +708,14 @@ def quantile_sum_gid(
                         shared_draws=shared_draws,
                     )
 
-                    # add gid_agg_col column (categorical with consistent categories)
-                    entry[gid_agg_col] = gid1
-                    entry[gid_agg_col] = entry[gid_agg_col].astype("category")
-                    entry[gid_agg_col] = entry[gid_agg_col].cat.set_categories(gid1s)
+                    # add geo_parent column (categorical with consistent categories)
+                    entry[geo_parent] = parent
+                    entry[geo_parent] = entry[geo_parent].astype("category")
+                    entry[geo_parent] = entry[geo_parent].cat.set_categories(parents)
 
-                    # Add Sum of Cases over gid_col for each Date (like original code)
-                    cases = df_gid1.groupby(
-                        ["Date", gid_col],
+                    # Add Sum of Cases over geo_col for each Date (like original code)
+                    cases = df_parent.groupby(
+                        ["Date", geo_col],
                         observed=True,
                     ).aggregate({"Cases": "first"})
                     cases = (
@@ -743,7 +735,7 @@ def quantile_sum_gid(
 
                 except ValueError as e:
                     logging.warning(
-                        f"Skipping quantile sum for {gid_agg_col}={gid1}, date={date}, horizon={horizon}: {e}"
+                        f"Skipping quantile sum for {geo_parent}={parent}, date={date}, horizon={horizon}: {e}"
                     )
 
     return tdf

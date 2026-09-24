@@ -62,11 +62,13 @@ def test_get_model_unknown_raises():
 # model's ModelSpec.supports).
 COMMON_KWARGS = {
     "start_date": "2020-01",
-    "gid_1": None,
+    "geo_col": "GID_2",
+    "geo_parent": "GID_1",
+    "geo_parent_filter": None,
     "horizons": [1, 3, 6, 12],
     "case_col": "Log_Cases",
     "covariate_cols": ["x"],
-    "model_admin_level": 2,
+    "train_col": "GID_2",
     "db_file": None,
 }
 #: Canonical knob name -> the kwarg `fit_model` passes to the model callable.

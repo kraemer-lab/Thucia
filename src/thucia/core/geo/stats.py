@@ -5,7 +5,9 @@ from rasterstats import zonal_stats
 from thucia.core.fs import cache_folder
 
 
-def raster_stats_gid2(tif_file, gid_2s: list[str], stats=["mean"]):
+def raster_stats_gid2(
+    tif_file, geo_codes: list[str], stats=["mean"], *, iso3: str | None = None
+):
     """
     Calculate zonal statistics for a given GeoDataFrame of polygons against a raster
     file.
@@ -17,17 +19,19 @@ def raster_stats_gid2(tif_file, gid_2s: list[str], stats=["mean"]):
     calculated statistics.
     """
 
-    iso3 = set(map(lambda x: x.split(".")[0], gid_2s))
-    if len(iso3) != 1:
-        raise ValueError("All filters must be for the same ISO3 country code.")
-    iso3 = iso3.pop()
+    if iso3 is None:
+        # Fall back to deriving the ISO3 from the geo codes (GADM-native).
+        iso3 = set(map(lambda x: x.split(".")[0], geo_codes))
+        if len(iso3) != 1:
+            raise ValueError("All filters must be for the same ISO3 country code.")
+        iso3 = iso3.pop()
 
     file_path = Path(cache_folder) / "geo" / iso3 / f"gadm41_{iso3}.gpkg"
     if not file_path.exists():
         raise FileNotFoundError(f"GeoPackage file for {iso3} not found at {file_path}")
 
     polygons = gpd.read_file(str(file_path), layer="ADM_ADM_2")
-    polygons = polygons[polygons["GID_2"].isin(gid_2s)]
+    polygons = polygons[polygons["GID_2"].isin(geo_codes)]
     stats_data = zonal_stats(polygons, tif_file, stats=stats)
     for measure in stats_data[0].keys():
         polygons[measure] = [stat[measure] for stat in stats_data]

@@ -109,12 +109,15 @@ def timesfm(
     df: DataFrame | pd.DataFrame,
     start_date: str | pd.Timestamp = pd.Timestamp.min,
     end_date: str | pd.Timestamp = pd.Timestamp.max,
-    gid_1: Optional[List[str]] = None,
+    geo_col: str = "GID_2",
+    geo_parent: Optional[str] = "GID_1",
+    geo_parent_filter: Optional[List[str]] = None,
     horizons: List[int] = [1],
     case_col: str = "Log_Cases",
     covariate_cols: Optional[List[str]] = None,
     retrain: bool = True,  # Only use False for a quick test
     db_file: str | Path | None = None,
+    train_col: Optional[str] = None,
     *args,
     **kwargs,
 ) -> DataFrame | pd.DataFrame:
@@ -133,7 +136,8 @@ def timesfm(
     model = TimesFMSamples(
         df=df,
         case_col=case_col,
-        geo_col="GID_2" if "GID_2" in df.columns else "GID_1",
+        geo_col=geo_col,
+        geo_parent=geo_parent,
         covariate_cols=covariate_cols,
         horizons=horizons,
         db_file=db_file,
@@ -143,6 +147,7 @@ def timesfm(
     tdf = model.historical_predictions(
         start_date=start_date,
         retrain=retrain,
+        train_col=train_col,
     )
     logging.info("Completed TimesFM forecasting pipeline.")
 

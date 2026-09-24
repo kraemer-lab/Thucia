@@ -96,13 +96,15 @@ def tft(
     end_date: str | pd.Timestamp = pd.Timestamp.max,
     train_start_date: str | pd.Timestamp = pd.Timestamp.min,
     train_end_date: str | pd.Timestamp = pd.Timestamp.max,
-    gid_1: Optional[List[str]] = None,
+    geo_col: str = "GID_2",
+    geo_parent: Optional[str] = "GID_1",
+    geo_parent_filter: Optional[List[str]] = None,
     horizons: List[int] = [1],
     case_col: str = "Log_Cases",
     covariate_cols: Optional[List[str]] = None,
     retrain: bool = True,  # Only use False for a quick test
     db_file: str | Path | None = None,
-    model_admin_level: int = 0,
+    train_col: Optional[str] = None,
     num_samples: int | None = None,
     multivariate: bool = True,
 ) -> DataFrame | pd.DataFrame:
@@ -117,6 +119,8 @@ def tft(
     model = TftSamples(
         df=df,
         case_col=case_col,
+        geo_col=geo_col,
+        geo_parent=geo_parent,
         covariate_cols=covariate_cols,
         horizons=horizons,
         num_samples=num_samples,
@@ -130,7 +134,7 @@ def tft(
     tdf = model.historical_predictions(
         start_date=start_date,
         retrain=retrain,
-        model_admin_level=model_admin_level,
+        train_col=train_col,
     )
     logging.info("Completed TFT forecasting pipeline.")
 

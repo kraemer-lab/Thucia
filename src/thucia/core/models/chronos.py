@@ -109,12 +109,12 @@ class ChronosQuantilesNative(DartsBase):
                     future_df=future_df,
                     prediction_length=horizon,
                     quantile_levels=self.quantiles,
-                    id_column="GID_2_codes",
+                    id_column=f"{self.geo_col}_codes",
                     timestamp_column="Date",
                     target="Log_Cases",
                 )
                 # [
-                #   'GID_2_codes',
+                #   f'{self.geo_col}_codes',
                 #   'Date',
                 #   'target_name', (target column, e.g. Log_Cases)
                 #   'predictions',  (median forecast value, same as '0.5' quantile)
@@ -202,14 +202,16 @@ def chronos(
     end_date: str | pd.Timestamp = pd.Timestamp.max,
     train_start_date: str | pd.Timestamp = pd.Timestamp.min,
     train_end_date: str | pd.Timestamp = pd.Timestamp.max,
-    gid_1: Optional[List[str]] = None,
+    geo_col: str = "GID_2",
+    geo_parent: Optional[str] = "GID_1",
+    geo_parent_filter: Optional[List[str]] = None,
     horizons: List[int] = [1],
     case_col: str = "Log_Cases",
     covariate_cols: Optional[List[str]] = None,
     retrain: bool = True,  # Only use False for a quick test
     db_file: str | Path | None = None,
     multivariate: bool = False,
-    model_admin_level: int = 0,
+    train_col: Optional[str] = None,
 ) -> DataFrame | pd.DataFrame:
     """Chronos forecasting pipeline.
 
@@ -218,11 +220,13 @@ def chronos(
     logging.info("Starting Chronos forecasting pipeline...")
 
     # Instantiate model
-    if model_admin_level == 0 and Chronos2Pipeline is not None:
-        # Using native Chronos implementation (fast, but only supports admin 2)
+    if train_col is None and Chronos2Pipeline is not None:
+        # Using native Chronos implementation (fast, but only supports whole-dataset fit)
         model = ChronosQuantilesNative(
             df=df,
             case_col=case_col,
+            geo_col=geo_col,
+            geo_parent=geo_parent,
             covariate_cols=covariate_cols,
             horizons=horizons,
             db_file=db_file,
@@ -232,10 +236,12 @@ def chronos(
         )
     else:
         # Using Darts implementation of Chronos (can be surprisingly slow, due to
-        # training, but can support admin 1 and admin 0 training)
+        # training, but supports per-region and whole-dataset training)
         model = ChronosQuantilesDarts(
             df=df,
             case_col=case_col,
+            geo_col=geo_col,
+            geo_parent=geo_parent,
             covariate_cols=covariate_cols,
             horizons=horizons,
             db_file=db_file,
@@ -250,7 +256,7 @@ def chronos(
     tdf = model.historical_predictions(
         start_date=start_date,
         retrain=retrain,
-        model_admin_level=model_admin_level,
+        train_col=train_col,
     )
     logging.info("Completed Chronos forecasting pipeline.")
 

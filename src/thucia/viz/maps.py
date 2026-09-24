@@ -14,16 +14,21 @@ from shapely.geometry import Polygon
 from thucia.core.fs import cache_folder
 
 
+def _admin_level_col(admin_level: str | int | None, default: str = "GID_1") -> str:
+    """Normalize an admin_level specifier to a GADM geo column name."""
+    if isinstance(admin_level, int):
+        return f"GID_{admin_level}"
+    if admin_level is None:
+        return default
+    return admin_level
+
+
 def boundary(
     country="BRA",
     ax=None,
     admin_level=1,
 ):
-    if isinstance(admin_level, int):
-        admin_level = f"GID_{admin_level}"
-    if admin_level is None:
-        admin_level = "GID_1"
-
+    admin_level = _admin_level_col(admin_level)
     if admin_level == "GID_1":
         layer = "ADM_ADM_1"
     elif admin_level == "GID_2":
@@ -57,11 +62,7 @@ def choropleth(
     vmax=None,
     colorbar_format="%.0f",
 ):
-    if isinstance(admin_level, int):
-        admin_level = f"GID_{admin_level}"
-    if admin_level is None:
-        admin_level = "GID_1"
-
+    admin_level = _admin_level_col(admin_level)
     if admin_level == "GID_1":
         layer = "ADM_ADM_1"
     elif admin_level == "GID_2":
@@ -171,11 +172,7 @@ def hexmap(
     hexmap_gdf : geopandas.GeoDataFrame
         GeoDataFrame of hexes with aggregated `value` column.
     """
-    if isinstance(admin_level, int):
-        admin_level = f"GID_{admin_level}"
-    if admin_level is None:
-        admin_level = "GID_1"
-
+    admin_level = _admin_level_col(admin_level)
     if admin_level == "GID_1":
         layer = "ADM_ADM_1"
     elif admin_level == "GID_2":
@@ -316,10 +313,7 @@ def hex_cartogram(
     Returns hex_gdf (GeoDataFrame with hex geometry and columns from regions).
     """
     # normalize admin_level
-    if isinstance(admin_level, int):
-        admin_level = f"GID_{admin_level}"
-    if admin_level is None:
-        admin_level = "GID_2"
+    admin_level = _admin_level_col(admin_level, default="GID_2")
     if admin_level != "GID_2":
         raise ValueError(
             "This function is intended for admin_level=2 (one hex per GID_2)."
@@ -525,11 +519,7 @@ def adjacency_matrix(
         The filtered region geometries used to build the matrix.
     """
 
-    if isinstance(admin_level, int):
-        admin_level = f"GID_{admin_level}"
-    if admin_level is None:
-        admin_level = "GID_1"
-
+    admin_level = _admin_level_col(admin_level)
     if admin_level == "GID_1":
         layer = "ADM_ADM_1"
     elif admin_level == "GID_2":

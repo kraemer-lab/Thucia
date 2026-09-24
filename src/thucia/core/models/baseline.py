@@ -74,13 +74,15 @@ def baseline(
     df: pd.DataFrame,
     start_date: str | pd.Timestamp = pd.Timestamp.min,
     end_date: str | pd.Timestamp = pd.Timestamp.max,
-    gid_1: List[str] | None = None,
+    geo_col: str = "GID_2",
+    geo_parent: str | None = "GID_1",
+    geo_parent_filter: List[str] | None = None,
     horizon: int = 1,
     case_col: str = "Log_Cases",
     covariate_cols: list[str] | None = None,
     retrain: bool = True,  # Retrain after every step (accurate but slow)
     db_file: str | Path | None = None,
-    model_admin_level: int = 0,  # Admin level for model training
+    train_col: str | None = None,
     num_samples: int | None = None,
     multivariate: bool = True,
     # --- Model parameters ---
@@ -90,7 +92,7 @@ def baseline(
     **kwargs,
 ) -> (
     pd.DataFrame
-):  # DataFrame with columns: GID_2, Date, sample, prediction, Cases, future
+):  # DataFrame with columns: geo_col, Date, sample, prediction, Cases, future
     logging.info("Starting baseline model...")
 
     if args:
@@ -125,6 +127,9 @@ def baseline(
 
     df = df[df["Date"].between(start_date, end_date)]
 
+    if geo_parent is not None and geo_parent_filter is not None:
+        df = df[df[geo_parent].isin(geo_parent_filter)]
+
     # Output dataframe
     tdf = (
         DataFrame(db_file=Path(db_file), new_file=True)
@@ -133,10 +138,10 @@ def baseline(
     )
 
     # Loop over regions
-    for gid2 in df["GID_2"].unique():
-        logging.info(f"Processing region {gid2} for baseline model")
+    for gid in df[geo_col].unique():
+        logging.info(f"Processing region {gid} for baseline model")
         # Filter data for the current region
-        region_data = df[df["GID_2"] == gid2].set_index("Date").sort_index()
+        region_data = df[df[geo_col] == gid].set_index("Date").sort_index()
 
         # Calculate incidence differences
         inc_diffs = region_data["Cases"].diff().fillna(0)
@@ -148,7 +153,7 @@ def baseline(
             df_quantiles.append(
                 pd.DataFrame(
                     {
-                        "GID_2": [gid2] * 3,
+                        geo_col: [gid] * 3,
                         "Date": region_data.index[:3],
                         "quantile": [0.5] * 3,
                         "prediction": [np.nan] * 3,
@@ -194,7 +199,7 @@ def baseline(
                 df_quantiles.append(
                     pd.DataFrame(
                         {
-                            "GID_2": [gid2] * len(quantiles),
+                            geo_col: [gid] * len(quantiles),
                             "Date": [region_data.index[k]] * len(quantiles),
                             "quantile": s2q["quantile"],
                             "prediction": s2q["value"],
@@ -204,12 +209,12 @@ def baseline(
                 )
         df_predictions = pd.concat(df_quantiles, ignore_index=True)
         df_one_region = df_predictions.merge(
-            df[["GID_2", "Date", "Cases", "future"]],
-            on=["GID_2", "Date"],
+            df[[geo_col, "Date", "Cases", "future"]],
+            on=[geo_col, "Date"],
             how="left",
         )
-        # Copy GID_2 categories from original DataFrame
-        df_one_region["GID_2"] = df_one_region["GID_2"].astype(df["GID_2"].dtype)
+        # Copy geo_col categories from original DataFrame
+        df_one_region[geo_col] = df_one_region[geo_col].astype(df[geo_col].dtype)
         tdf.append(df_one_region)
 
     logging.info("Baseline model complete.")

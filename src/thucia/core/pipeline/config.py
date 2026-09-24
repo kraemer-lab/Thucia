@@ -44,7 +44,15 @@ class PipelineConfig:
     train_start_date: Optional[str | pd.Period] = None
     train_end_date: Optional[str | pd.Period] = None
     horizons: list[int] = field(default_factory=lambda: [1, 3, 6, 12])
-    model_admin_level: int = 2
+    # The column holding the finest geographic unit being modelled (defaults to
+    # GADM admin-2 codes) and, when set, its coarser parent column (GADM
+    # admin-1). Set `geo_parent=None` when the data has no parent column.
+    geo_col: str = "GID_2"
+    geo_parent: Optional[str] = "GID_1"
+    # Optional column name to fit per-region at a *different* resolution than
+    # `geo_col` (e.g. train per GID_1 but forecast per GID_2). None keeps the
+    # default per-`geo_col` fitting.
+    train_col: Optional[str] = None
     case_col: str = "Log_Cases"
     num_samples: int = 200
     retrain: bool = False

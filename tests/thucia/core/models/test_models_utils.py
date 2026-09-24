@@ -91,7 +91,7 @@ def test_filter_admin1():
 def test_interpolate_missing_dates():
     base = _monthly_df(n=4)
     df = base.drop(base.index[[2, 5]])
-    out = interpolate_missing_dates(df, gid_col="GID_2")
+    out = interpolate_missing_dates(df, geo_col="GID_2")
     for g in ["A", "B"]:
         assert out[out["GID_2"] == g]["Date"].is_monotonic_increasing
     # all (GID_2, Date) combos present

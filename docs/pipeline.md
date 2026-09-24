@@ -98,9 +98,15 @@ commonly changed fields:
   - `"linear"`
   - How coarser-granularity covariates are interpolated onto the case grid
     (`"linear"`, `"ffill"`, or `"bfill"`).
-* - `model_admin_level`
-  - `2`
-  - Admin level of the forecast regions (admin-2 by default).
+* - `geo_col` / `geo_parent`
+  - `"GID_2"` / `"GID_1"`
+  - Geo unit columns: `geo_col` is the forecast region, `geo_parent` its larger
+    grouping (used for filtering/subsetting). Falls back to `"GID_1"` internally
+    if left unset.
+* - `train_col`
+  - `None`
+  - Column to fit per-region at (e.g. `GID_1` for an admin-1 fit); when `None`
+    the pipeline fits per `geo_col`.
 * - `case_col`
   - `"Log_Cases"`
   - Column used by the models.

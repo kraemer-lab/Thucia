@@ -451,7 +451,13 @@ def convert_to_incidence_rate(
     return df_with_pop
 
 
-def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
+def pad_admin2(
+    df: DataFrame | pd.DataFrame,
+    *,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+    iso3: str | None = None,
+) -> DataFrame:
     """
     Ensure all Admin-2 regions are included in the DataFrame, even those with zero
     cases.
@@ -460,16 +466,18 @@ def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
     if isinstance(df, DataFrame):
         df = df.df  # convert to pandas DataFrame (quick fix, consider function rewrite)
 
-    if "GID_2" not in df.columns:
-        raise ValueError("DataFrame must contain 'GID_2' column.")
+    if geo_col not in df.columns:
+        raise ValueError(f"DataFrame must contain '{geo_col}' column.")
 
     # Get unique Admin-2 regions
-    gid0 = df["GID_2"].iloc[0][:3]  # Assuming GID_2 starts with GID-0
-    unique_admin2 = df["GID_2"].unique()
-    all_admin2 = get_admin2_list(gid0)
+    if iso3 is None:
+        # Fall back to deriving the ISO3 from the first geo code (GADM-native).
+        iso3 = str(df[geo_col].iloc[0])[:3]
+    unique_admin2 = df[geo_col].unique()
+    all_admin2 = get_admin2_list(iso3)
 
     # Find missing Admin-2 regions
-    missing_admin2 = set(all_admin2["GID_2"].unique()) - set(unique_admin2)
+    missing_admin2 = set(all_admin2[geo_col].unique()) - set(unique_admin2)
     date_list = list(df["Date"].drop_duplicates().sort_values())
     n_dates = len(date_list)
 
@@ -479,18 +487,20 @@ def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
         df_entry = pd.DataFrame(
             {
                 "Date": date_list,
-                "GID_1": [all_admin2["GID_1"][all_admin2["GID_2"] == adm2].values[0]]
+                geo_parent: [
+                    all_admin2[geo_parent][all_admin2[geo_col] == adm2].values[0]
+                ]
                 * n_dates,
-                "GID_2": [adm2] * n_dates,
+                geo_col: [adm2] * n_dates,
                 "Cases": [0] * n_dates,
             }
         )
         if "ADM1" in df.columns:
-            df_entry["ADM1"] = all_admin2["NAME_1"][all_admin2["GID_2"] == adm2].values[
+            df_entry["ADM1"] = all_admin2["NAME_1"][all_admin2[geo_col] == adm2].values[
                 0
             ]
         if "ADM2" in df.columns:
-            df_entry["ADM2"] = all_admin2["NAME_2"][all_admin2["GID_2"] == adm2].values[
+            df_entry["ADM2"] = all_admin2["NAME_2"][all_admin2[geo_col] == adm2].values[
                 0
             ]
         missing_df.append(df_entry)
@@ -498,10 +508,10 @@ def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
     # Concatenate the original DataFrame with the missing regions
     result = (
         pd.concat([df, *missing_df], ignore_index=True)
-        .sort_values(["Date", "GID_2"])
+        .sort_values(["Date", geo_col])
         .reset_index(drop=True)
     )
-    result.sort_values(by=["Date", "GID_2"], inplace=True)
+    result.sort_values(by=["Date", geo_col], inplace=True)
 
     # Convert to Thucia DataFrame and clean up
     out = DataFrame(df=result)

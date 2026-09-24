@@ -30,11 +30,13 @@ def df():
 def _run(model, df, tmp_path, **extra):
     kwargs = {
         "start_date": START,
-        "gid_1": None,
+        "geo_col": "GID_2",
+        "geo_parent": "GID_1",
+        "geo_parent_filter": None,
         "horizons": [1],
         "case_col": "Log_Cases",
         "covariate_cols": COVARIATE_COLS,
-        "model_admin_level": 2,
+        "train_col": "GID_2",
         "db_file": None,
     }
     kwargs.update(extra)

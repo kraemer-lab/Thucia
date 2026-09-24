@@ -25,6 +25,7 @@ class DartsBase:
         case_col: str = "Cases",
         date_col="Date",
         geo_col="GID_2",
+        geo_parent: Optional[str] = "GID_1",
         covariate_cols: Optional[List[str]] = None,
         horizons=[1],
         num_samples: int | None = None,
@@ -38,6 +39,7 @@ class DartsBase:
         self.case_col = case_col
         self.date_col = date_col
         self.geo_col = geo_col
+        self.geo_parent = geo_parent
         self.covariate_cols = covariate_cols or []
         self.horizons = horizons
         self.num_samples = num_samples or 1000
@@ -47,15 +49,16 @@ class DartsBase:
         self.fit_delta = False
 
         # Models assume the geo column is categorical (e.g. multivariate
-        # encoding via .cat.codes, and stable category ordering across GIDs).
-        # Coerce on the local copy if the caller supplied plain strings.
+        # encoding via .cat.codes, and stable category ordering across geo
+        # units). Coerce on the local copy if the caller supplied plain strings.
         if isinstance(self.df, pd.DataFrame) and self.geo_col in self.df.columns:
             if not isinstance(self.df[self.geo_col].dtype, pd.CategoricalDtype):
                 self.df = self.df.copy()
                 self.df[self.geo_col] = self.df[self.geo_col].astype("category")
 
-        if self.multivariate and "GID_2_codes" not in self.covariate_cols:
-            self.covariate_cols.append("GID_2_codes")  # added in get_cases
+        gid_codes_col = f"{self.geo_col}_codes"
+        if self.multivariate and gid_codes_col not in self.covariate_cols:
+            self.covariate_cols.append(gid_codes_col)  # added in get_cases
 
         if self.db_file:
             logging.debug(f"Darts model initialized with file store: {self.db_file}")
@@ -107,8 +110,8 @@ class DartsBase:
         self.rejected_gids = set(self.df[self.geo_col].unique()) - set(self.valid_gids)
         if self.rejected_gids:
             logging.info(
-                f"Excluding {len(self.rejected_gids)} GID_2s with no incidence in "
-                "training period."
+                f"Excluding {len(self.rejected_gids)} {self.geo_col} regions with no "
+                "incidence in training period."
             )
 
     # Child classes must override this method to provide concrete functionality
@@ -138,12 +141,13 @@ class DartsBase:
         if end_date is None:
             end_date = df[self.date_col].max()
 
-        # Add GID2 as numeric code
+        # Add geo units as numeric code for multivariate encoding
         if self.multivariate:
-            if "GID_2_codes" not in df.columns:
-                df = df.assign(GID_2_codes=df["GID_2"].cat.codes)
-            if "GID_2_codes" not in self.covariate_cols:
-                self.covariate_cols.append("GID_2_codes")
+            gid_codes_col = f"{self.geo_col}_codes"
+            if gid_codes_col not in df.columns:
+                df = df.assign(**{gid_codes_col: df[self.geo_col].cat.codes})
+            if gid_codes_col not in self.covariate_cols:
+                self.covariate_cols.append(gid_codes_col)
 
         start_date = align_date_types(start_date, df[self.date_col])
         end_date = align_date_types(end_date, df[self.date_col])
@@ -200,8 +204,9 @@ class DartsBase:
         horizon: int,
         retrain: bool = True,  # only turn off for faster testing
         start_date: pd.Timestamp | None = None,
-        geo_col: str = "GID_1",
+        geo_col: str | None = None,
     ) -> DataFrame | pd.DataFrame:
+        geo_col = geo_col or self.geo_col
         gid_list = self.df[geo_col].unique().tolist()
         for ix, gid in enumerate(gid_list):
             logging.info(f"Processing {geo_col}: {gid}...")
@@ -227,18 +232,24 @@ class DartsBase:
     def historical_predictions(
         self,
         *,
-        model_admin_level: int | None = None,  # 0=country, 1=state, 2=municipality
+        train_col: str | None = None,
         retrain: bool = True,  # only turn off for faster testing
         start_date: pd.Timestamp | None = None,
     ) -> DataFrame | pd.DataFrame:
         """
-        Pre-fits on all regions, then generates historical forecasts for each region
-        separately.
+        Pre-fits on all regions, then generates historical forecasts for each
+        region separately.
+
+        ``train_col`` names the column to fit per-region at (e.g. ``"GID_1"``
+        or ``"GID_2"``). When ``None``, the whole dataset is trained in a
+        single pass (country-level fit).
         """
-        model_admin_level = model_admin_level if model_admin_level is not None else 0
-        logging.info(
-            f"Generating historical predictions at admin level {model_admin_level}."
-        )
+        if train_col is None:
+            logging.info("Generating historical predictions on the whole dataset.")
+        else:
+            logging.info(
+                f"Generating historical predictions per region grouped by {train_col}."
+            )
 
         tdf = (
             DataFrame(db_file=Path(self.db_file), new_file=True)
@@ -246,7 +257,7 @@ class DartsBase:
             else DataFrame()  # fallback to in-memory DataFrame
         )
 
-        if model_admin_level == 0:  # Train on entire country
+        if train_col is None:  # Train on entire dataset
             for horizon in self.horizons:
                 self._historical_predictions_onepass(
                     tdf_out=tdf,
@@ -254,29 +265,15 @@ class DartsBase:
                     start_date=start_date,
                     horizon=horizon,
                 )
-
-        elif model_admin_level == 1:  # Train per state (GID_1)
+        else:  # Train per region grouped by train_col
             for horizon in self.horizons:
                 self._historical_predictions_per_region(
                     tdf_out=tdf,
                     retrain=retrain,
                     start_date=start_date,
-                    geo_col="GID_1",
+                    geo_col=train_col,
                     horizon=horizon,
                 )
-        elif model_admin_level == 2:  # Train per municipality (GID_2)
-            for horizon in self.horizons:
-                self._historical_predictions_per_region(
-                    tdf_out=tdf,
-                    retrain=retrain,
-                    start_date=start_date,
-                    geo_col="GID_2",
-                    horizon=horizon,
-                )
-        else:
-            raise ValueError(
-                f"model_admin_level must be 0, 1, or 2 (got '{model_admin_level}')."
-            )
 
         return tdf
 

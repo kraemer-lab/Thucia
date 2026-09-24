@@ -91,7 +91,7 @@ def test_baseline_symmetric():
         df,
         start_date="2023-01",
         end_date="2023-08",
-        gid_1=["A"],
+        geo_parent_filter=["A"],
         num_samples=3,  # quantiles are sampled without replacement
         # symmetrize should be True by default
     )
@@ -142,7 +142,7 @@ def test_baseline_asymmetric():
         df,
         start_date="2023-01",
         end_date="2023-08",
-        gid_1=["A"],
+        geo_parent_filter=["A"],
         num_samples=3,  # quantiles are sampled without replacement
         symmetrize=False,
     )
