@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from thucia.core.fs import DataFrame
+from thucia.core.fs import read_db
 from thucia.core.fs import read_nc
 from thucia.core.fs import write_nc
 
@@ -191,3 +192,61 @@ def test_nc_roundtrip_period_date_column(tmp_path):
 def test_read_nc_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         read_nc(str(tmp_path / "does_not_exist.nc"))
+
+
+# --- Legacy GADM column aliasing (geo_col/geo_parent) ---
+
+
+def _legacy_db(tmp_path, name="events"):
+    path = tmp_path / f"{name}.duckdb"
+    DataFrame(
+        df=pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2023-01-01", "2023-01-02"]),
+                "GID_1": ["G.1_1", "G.1_1"],
+                "GID_2": ["G.1.1_2", "G.1.2_2"],
+                "Cases": [1.0, 2.0],
+            }
+        ),
+        db_path=path,
+    )
+    return path
+
+
+def test_alias_read_logical_columns(tmp_path):
+    path = _legacy_db(tmp_path)
+    tdf = read_db(path, geo_col="region", geo_parent="state")
+    assert tdf.columns == ["Date", "state", "region", "Cases"]
+    df = tdf.df
+    assert "region" in df.columns and "GID_2" not in df.columns
+    assert df["region"].tolist() == ["G.1.1_2", "G.1.2_2"]
+    assert df["state"].tolist() == ["G.1_1", "G.1_1"]
+    assert tdf[["region", "state"]].equals(df[["region", "state"]])
+    assert set(tdf["region"]) == {"G.1.1_2", "G.1.2_2"}
+
+
+def test_alias_read_default_leaves_physical(tmp_path):
+    path = _legacy_db(tmp_path)
+    tdf = read_db(path)
+    assert tdf.columns == ["Date", "GID_1", "GID_2", "Cases"]
+    assert "GID_2" in tdf.df.columns
+
+
+def test_alias_migrate_physically_renames(tmp_path):
+    path = _legacy_db(tmp_path)
+    tdf = read_db(path, geo_col="region", geo_parent="state", migrate=True)
+    assert len(tdf.df) == 2
+    tdf2 = read_db(path, geo_col="region", geo_parent="state")
+    assert "GID_2" not in tdf2.columns
+    assert tdf2.df["region"].tolist() == ["G.1.1_2", "G.1.2_2"]
+
+
+def test_alias_read_nc(tmp_path):
+    path = tmp_path / "legacy.nc"
+    write_nc(
+        pd.DataFrame({"GID_1": ["G.1_1"], "GID_2": ["G.1.1_2"], "Cases": [1.0]}),
+        str(path),
+    )
+    tdf = read_db(path, geo_col="region", geo_parent="state")
+    assert "region" in tdf.df.columns and "state" in tdf.df.columns
+    assert "GID_2" not in tdf.df.columns

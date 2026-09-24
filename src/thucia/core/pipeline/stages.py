@@ -23,7 +23,6 @@ from thucia.core.cases import r2
 from thucia.core.cases import wis
 from thucia.core.fs import DataFrame
 from thucia.core.geo import add_incidence_rate
-from thucia.core.geo import lookup_gid1
 from thucia.core.geo import merge_sources
 from thucia.core.geo import pad_admin2
 from thucia.core.models import get_model
@@ -48,6 +47,22 @@ def base_columns(config: PipelineConfig) -> tuple[str, ...]:
     return tuple(cols)
 
 
+def coerce_geo_cols(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame:
+    """Coerce the geo code columns to ``str`` (geo codes are strings).
+
+    Applied at pipeline entry so downstream joins, group-bys and ENUM writes
+    all see the same string-typed codes regardless of the loader's dtype.
+    """
+    for col in (config.geo_col, config.geo_parent):
+        if col is None or col not in df.columns:
+            continue
+        dtype = df[col].dtype
+        if pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype):
+            continue
+        df[col] = df[col].astype(str)
+    return df
+
+
 def cases_per_period(
     df: pd.DataFrame | DataFrame,
     config: PipelineConfig,
@@ -58,6 +73,9 @@ def cases_per_period(
     Returns the padded frame (historical rows plus `future_months` of future
     placeholder rows with NaN Cases and ``future=True``).
     """
+    if isinstance(df, DataFrame):
+        df = df.df
+    coerce_geo_cols(df, config)
     if freq == "M":
         tdf = cases_per_month(df, cutoff_date=config.cutoff_date)
     else:
@@ -114,7 +132,7 @@ def prepare_model_inputs(
     features are built via ``build_features``; otherwise every non-base column
     of the input is treated as a covariate.
     """
-    out = df.copy()
+    out = coerce_geo_cols(df, config).copy()
     out[config.case_col] = np.log1p(out["Cases"])
 
     if config.lag_spec:
@@ -163,9 +181,7 @@ def fit_model(
         "start_date": config.start_date,
         "geo_col": config.geo_col,
         "geo_parent": config.geo_parent,
-        "geo_parent_filter": (
-            lookup_gid1(config.iso3, config.adm1) if config.iso3 else config.adm1
-        ),
+        "geo_parent_filter": config.adm1,
         "horizons": config.horizons,
         "case_col": config.case_col,
         "covariate_cols": covariate_cols,

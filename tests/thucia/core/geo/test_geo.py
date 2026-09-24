@@ -5,7 +5,6 @@ import pytest
 from thucia.core.geo import add_incidence_rate
 from thucia.core.geo import align_admin2_regions
 from thucia.core.geo import fuzzy_match_one
-from thucia.core.geo import lookup_gid1
 from thucia.core.geo import pad_admin2
 from thucia.core.geo import remove_accents
 
@@ -62,12 +61,6 @@ def test_add_incidence_rate():
     )
     out = add_incidence_rate(df)
     assert out["DIR"].tolist() == pytest.approx([500.0, 500.0])
-
-
-def test_lookup_gid1_filters_by_name(admin2_list):
-    with patch("thucia.core.geo.get_admin2_list", return_value=admin2_list):
-        codes = lookup_gid1("X", ["State"])
-    assert codes == ["X.1_1"]
 
 
 def test_align_admin2_regions_exact_match(admin2_list):

@@ -16,31 +16,6 @@ from .plugin_base import source_registry
 from .plugin_loader import load_plugins
 
 
-def lookup_gid1(iso3, admin1_names: list[str] | None = None):
-    """
-    Lookup GID_1 codes for the given administrative level 1 names in a DataFrame.
-
-    Parameters:
-    admin1_names (list[str]): List of administrative level 1 names to lookup.
-    iso3 (str): ISO3 country code.
-
-    Returns:
-    list[str]: List of GID_1 codes corresponding to the provided names.
-    """
-    if admin1_names:
-        logging.info(
-            f"Looking up GID_1 codes for Admin-1 names: {admin1_names} in {iso3}..."
-        )
-    else:
-        logging.info("Admin-1 filter not specified, retrieving all GID_1 codes...")
-
-    gdf = get_admin2_list(iso3)
-    if admin1_names:
-        gdf = gdf[gdf["NAME_1"].isin(admin1_names)]
-    admin1_regions = gdf["GID_1"].unique().tolist()
-    return admin1_regions
-
-
 def remove_accents(text):
     if not isinstance(text, str):
         return text

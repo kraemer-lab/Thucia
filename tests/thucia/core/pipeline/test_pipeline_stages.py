@@ -192,6 +192,61 @@ def test_fit_model_unknown_raises(tmp_path):
         fit_model(pd.DataFrame(), "not_a_model", PipelineConfig(path=tmp_path))
 
 
+def test_fit_model_coerces_integer_geo_codes(tmp_path):
+    # geo codes arrive as integers (e.g. from a non-GADM loader): the pipeline
+    # must coerce them to str so ENUM writes and per-region group-bys stay
+    # consistent, not uint codes.
+    idx = pd.period_range("2016-01", periods=36, freq="M")
+    df = pd.DataFrame(
+        {
+            "Date": idx.repeat(2),
+            "GID_2": np.tile([1, 2], 36),
+            "future": [False] * 72,
+            "Cases": np.tile(np.arange(36.0), 2),
+        }
+    )
+    cfg = PipelineConfig(
+        path=tmp_path,
+        start_date=pd.Period("2018-01", freq="M"),
+        horizons=[1],
+        num_samples=50,
+    )
+    inputs, _ = prepare_model_inputs(df, cfg)
+    assert inputs["GID_2"].dtype == object
+    assert sorted(inputs["GID_2"].unique()) == ["1", "2"]
+    out = fit_model(inputs, "baseline", cfg, db_file=None)
+    frame = out.df if hasattr(out, "df") else out
+    assert sorted({str(g) for g in frame["GID_2"].unique()}) == ["1", "2"]
+
+
+def test_fit_model_applies_geo_parent_filter(tmp_path):
+    # config.adm1 becomes the geo_parent_filter: baseline must only fit the
+    # regions whose geo_parent is in the allowlist.
+    idx = pd.period_range("2016-01", periods=36, freq="M")
+    df = pd.DataFrame(
+        {
+            "Date": idx.repeat(4),
+            "GID_1": ["G.1_1", "G.1_1", "G.2_1", "G.2_1"] * 36,
+            "GID_2": ["G.1.1_2", "G.1.2_2", "G.2.1_2", "G.2.2_2"] * 36,
+            "future": [False] * 144,
+            "Cases": np.tile(np.arange(36.0), 4),
+        }
+    )
+    for col in ("GID_1", "GID_2"):
+        df[col] = df[col].astype("category")
+    cfg = PipelineConfig(
+        path=tmp_path,
+        start_date=pd.Period("2018-01", freq="M"),
+        horizons=[1],
+        num_samples=50,
+        adm1=["G.1_1"],
+    )
+    inputs, _ = prepare_model_inputs(df, cfg)
+    out = fit_model(inputs, "baseline", cfg, db_file=None)
+    frame = out.df if hasattr(out, "df") else out
+    assert set(frame["GID_2"].unique()) == {"G.1.1_2", "G.1.2_2"}
+
+
 def test_score_model():
     dates = pd.period_range("2020-01", periods=3, freq="M")
     rows = []
