@@ -20,6 +20,8 @@ class PipelineConfig:
 
     path: str | Path = "."
     iso3: Optional[str] = None
+    # geo-parent **codes** to restrict forecasting to (e.g. GADM GID_1 values);
+    # threaded into fit_model as geo_parent_filter.
     adm1: Optional[list[str]] = None
 
     # Case aggregation
