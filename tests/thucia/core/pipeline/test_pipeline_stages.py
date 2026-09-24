@@ -247,6 +247,34 @@ def test_fit_model_applies_geo_parent_filter(tmp_path):
     assert set(frame["GID_2"].unique()) == {"G.1.1_2", "G.1.2_2"}
 
 
+def test_fit_model_non_gadm_geo_col(tmp_path):
+    # A non-GADM naming scheme (e.g. "region", no parent) must flow end-to-end:
+    # the pipeline never assumes GID_1/GID_2 exist.
+    idx = pd.period_range("2016-01", periods=36, freq="M")
+    df = pd.DataFrame(
+        {
+            "Date": idx.repeat(2),
+            "region": ["north", "south"] * 36,
+            "future": [False] * 72,
+            "Cases": np.tile(np.arange(36.0), 2),
+        }
+    )
+    cfg = PipelineConfig(
+        path=tmp_path,
+        geo_col="region",
+        geo_parent=None,
+        start_date=pd.Period("2018-01", freq="M"),
+        horizons=[1],
+        num_samples=50,
+    )
+    inputs, _ = prepare_model_inputs(df, cfg)
+    assert "region" in inputs.columns and "GID_2" not in inputs.columns
+    assert sorted(inputs["region"].unique()) == ["north", "south"]
+    out = fit_model(inputs, "baseline", cfg, db_file=None)
+    frame = out.df if hasattr(out, "df") else out
+    assert set(frame["region"].unique()) == {"north", "south"}
+
+
 def test_score_model():
     dates = pd.period_range("2020-01", periods=3, freq="M")
     rows = []
