@@ -149,7 +149,9 @@ def run_model(
     if save_quantiles and "quantile" not in df_model.columns:
         if "sample" in df_model.columns:
             if isinstance(df_model, pd.DataFrame):
-                df_model = samples_to_quantiles(df_model)
+                df_model = samples_to_quantiles(
+                    df_model, geo_col=model_kwargs.get("geo_col", "GID_2")
+                )
             elif isinstance(df_model, DataFrame):
                 df_model = samples_to_quantiles(df_model.df)
             else:

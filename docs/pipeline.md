@@ -98,6 +98,10 @@ commonly changed fields:
   - `"linear"`
   - How coarser-granularity covariates are interpolated onto the case grid
     (`"linear"`, `"ffill"`, or `"bfill"`).
+* - `use_cache`
+  - `False`
+  - Read sources' cached covariate stats where present (sources still extract
+    on cache misses); `False` re-extracts zonal statistics every run.
 * - `regions` / `region_col`
   - `None`
   - Optional polygon map (shapefile/GeoPackage path, or in-memory GeoDataFrame)

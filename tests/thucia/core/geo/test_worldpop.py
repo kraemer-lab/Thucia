@@ -21,9 +21,7 @@ def test_resolve_country_key_from_regions_map():
 
 
 def test_resolve_country_key_from_gadm_prefix():
-    assert (
-        resolve_country_key(None, None, ["BRA.1.1_2", "BRA.1.2_2"]) == "BRA"
-    )
+    assert resolve_country_key(None, None, ["BRA.1.1_2", "BRA.1.2_2"]) == "BRA"
 
 
 def test_resolve_country_key_no_regions_map_uses_gadm_prefix():
@@ -63,7 +61,9 @@ def test_worldpop_merge_generic_geo_col(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worldpop, "raster_stats_gid2", lambda *a, **k: None)
     monkeypatch.setattr(wp, "get_cached_stats", fake_stats)
-    monkeypatch.setattr(wp, "_get_cached_stats_gadm", lambda *a, **k: pytest.fail("gadm path"))
+    monkeypatch.setattr(
+        wp, "_get_cached_stats_gadm", lambda *a, **k: pytest.fail("gadm path")
+    )
 
     df = pd.DataFrame(
         {

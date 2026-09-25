@@ -308,6 +308,27 @@ def test_score_model():
     assert np.isfinite(scored["WIS"]).all()
 
 
+def test_score_model_without_horizon_column():
+    # Single-horizon models (movavg) emit no `horizon` column; it defaults to 1.
+    dates = pd.period_range("2020-01", periods=3, freq="M")
+    rows = []
+    for d in dates:
+        for q in [0.05, 0.5, 0.95]:
+            rows.append(
+                {
+                    "GID_2": "G",
+                    "Date": d,
+                    "quantile": q,
+                    "prediction": 5.0 * q + d.month,
+                    "Cases": 5.0,
+                }
+            )
+    df = pd.DataFrame(rows)
+    scored = score_model(df, PipelineConfig(path=".", horizons=[1, 3]))
+    assert set(scored["horizon"].unique()) == {1}
+    assert np.isfinite(scored["WIS"]).all()
+
+
 def test_aggregate_quantiles(tmp_path):
     dates = pd.period_range("2020-01", periods=2, freq="M")
     rows = []

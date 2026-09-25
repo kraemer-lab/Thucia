@@ -77,6 +77,12 @@ Downloads and derived statistics are cached under the platform cache directory
 - `cache_folder/geo/<ISO3>/gadm41_<ISO3>.gpkg` — GADM admin-2 GeoPackages used
   for region alignment, padding, and map plotting.
 
+By default the pipeline re-extracts zonal statistics from the downloaded
+rasters on every run. Setting `PipelineConfig.use_cache=True` makes
+`merge_covariates` read each source's SQLite stats cache first, falling back to
+extraction only on cache misses (`"real-read"` vs. `"real-fresh"` behaviour in
+the Peru exploration script).
+
 ```{note}
 The first time you merge a covariate for a new country or period, Thucia
 downloads the relevant data. This is why the WorldClim merge is the slowest

@@ -374,14 +374,15 @@ def merge_geo_sources(
     iso3: str | None = None,
     regions=None,
     region_col: str | None = None,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """
     Add source information to the DataFrame.
 
     Parameters:
-    df (pd.DataFrame): The DataFrame to which source information will be added.
-    sources (list[str]): List of sources to be added. Format: ['origin.field']
-                         where field may be '*', e.g. ['worldclim.*', 'edo.spi6'].
+    df (pd.DataFrame): DataFrame containing 'GID_2' (or `geo_col`) and 'Date'
+                       columns.
+    sources (list[str]): List of covariate source specifications.
     method (str): Interpolation method used when a source's granularity is
                   coarser than the case-data frequency (e.g. monthly sources on
                   a weekly grid). Default "linear"; also "ffill"/"bfill".
@@ -393,6 +394,8 @@ def merge_geo_sources(
     regions: A shapefile/GeoPackage path or in-memory (Geo)DataFrame with a
                   geometry column, keyed by `region_col` (defaults to `geo_col`).
     region_col (str | None): The `regions` column holding the geo codes.
+    use_cache (bool): Read sources' cached stats where available instead of
+                  always re-extracting (sources still extract on cache misses).
     """
     _ensure_plugins_loaded()
     polygons = _load_regions_gdf(regions, region_col, geo_col)
@@ -412,7 +415,12 @@ def merge_geo_sources(
         plugin = source_registry.get(origin)()
         orig_cols = set(df.columns)
         merged = plugin.merge(
-            df, metrics=fields, geo_col=geo_col, iso3=iso3, polygons=polygons
+            df,
+            metrics=fields,
+            geo_col=geo_col,
+            iso3=iso3,
+            polygons=polygons,
+            use_cache=use_cache,
         )
         new_cols = [c for c in merged.columns if c not in orig_cols]
         if not new_cols or not isinstance(merged["Date"].dtype, pd.PeriodDtype):
@@ -690,6 +698,7 @@ def merge_sources(
     iso3: str | None = None,
     regions=None,
     region_col: str | None = None,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """
     Merge geographic and climatological covariates into the main DataFrame.
@@ -700,7 +709,8 @@ def merge_sources(
     `geo_col`, `iso3`, `regions`, and `region_col` are forwarded to each source
     (see merge_geo_sources): GADM-shaped codes work out of the box; any other
     geo scheme should supply a `regions` map so raster sources can extract
-    values.
+    values. `use_cache` forwards each source's cached-stats flag (see
+    merge_geo_sources).
     """
     categorical_covars = ["GID_1", "GID_2", "ADM1", "ADM2", "Status"]
     for covar in covars:
@@ -712,6 +722,7 @@ def merge_sources(
             iso3=iso3,
             regions=regions,
             region_col=region_col,
+            use_cache=use_cache,
         )
         for cat in categorical_covars:
             if cat in df_covar.columns:

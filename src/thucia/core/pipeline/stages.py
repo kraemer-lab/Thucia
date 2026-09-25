@@ -141,6 +141,7 @@ def merge_covariates(
             iso3=config.iso3,
             regions=config.regions,
             region_col=config.region_col,
+            use_cache=config.use_cache,
         )
         new_cols = [c for c in merged.columns if c not in df.columns]
         out = out.merge(
@@ -245,6 +246,8 @@ def score_model(
 ) -> pd.DataFrame:
     """Score a quantile frame: WIS and R2 per geo and horizon."""
     geo_col = geo_col or config.geo_col
+    if "horizon" not in df_quantiles.columns:
+        df_quantiles = df_quantiles.assign(horizon=1)
     parts = []
     for h in config.horizons:
         dfh = df_quantiles[df_quantiles["horizon"] == h].copy()

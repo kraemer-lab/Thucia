@@ -184,7 +184,9 @@ def test_merge_sources_calls_plugin(admin2_list):
         ):
             df = df.copy()
             df["fake_col"] = 42.0
-            seen.update(geo_col=geo_col, iso3=iso3, polygons=polygons)
+            seen.update(
+                geo_col=geo_col, iso3=iso3, polygons=polygons, use_cache=use_cache
+            )
             return df
 
     fake_registry = Registry("covariate source")
@@ -211,9 +213,11 @@ def test_merge_sources_calls_plugin(admin2_list):
             iso3="XX",
             region_col="region",
             regions=regions,
+            use_cache=True,
         )
     assert "fake_col" in out.columns
     assert (out["fake_col"] == 42.0).all()
     assert seen["geo_col"] == "region"
     assert seen["iso3"] == "XX"
     assert seen["polygons"] is regions
+    assert seen["use_cache"] is True

@@ -56,6 +56,10 @@ class PipelineConfig:
     # Interpolation method for coarser-granularity sources onto finer case grids
     # ("linear" default; also "ffill"/"bfill").
     covariate_interpolation: str = "linear"
+    # Read covariate values from the SQLite stats cache where present (sources
+    # fall back to raster extraction on cache misses). False re-extracts zonal
+    # statistics every run (the downloaded rasters themselves stay cached).
+    use_cache: bool = False
 
     # Model fitting
     start_date: Optional[str | pd.Period] = None
