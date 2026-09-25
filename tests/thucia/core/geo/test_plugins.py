@@ -180,6 +180,38 @@ def test_merge_geo_sources_gap_free_no_warning(fake_registry, monkeypatch):
     assert (out["tmax"] == 25.0).all()
 
 
+def test_noaa_merge_accepts_geo_kwargs(monkeypatch):
+    # NOAA is date-only, but merge_geo_sources calls every plugin with
+    # geo_col / iso3 / polygons / use_cache — its merge must accept (and
+    # ignore) them.
+    import thucia.core.geo.sources.noaa as noaa_mod
+
+    faked = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2022-01-31", "2022-02-28"]),
+            "AnomONI": [0.1, -0.2],
+            "TotalONI": [0.3, -0.4],
+        }
+    )
+    monkeypatch.setattr(noaa_mod.NOAA, "_load_oni", lambda self: faked)
+    src = noaa_mod.NOAA()
+    df = pd.DataFrame(
+        {
+            "GID_2": ["A", "B"],
+            "Date": pd.period_range("2022-01", periods=2, freq="M"),
+        }
+    )
+    out = src.merge(
+        df,
+        use_cache=True,
+        geo_col="region3",
+        iso3="PER",
+        polygons="ignored",
+    )
+    assert {"AnomONI", "TotalONI"} <= set(out.columns)
+    assert len(out) == 2
+
+
 def test_merge_geo_sources_non_gadm_geo_col(fake_registry, monkeypatch):
     import thucia.core.geo as geo
 

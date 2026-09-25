@@ -136,6 +136,8 @@ class EDO(SourceBase):
         return tif_file
 
     def _get_cache_records(self, dates, geo_codes, geo_col: str):
+        if isinstance(dates.dtype, pd.PeriodDtype):
+            dates = dates.dt.to_timestamp(how="end")
         df = self.cache.get_records(
             {
                 "Date": pd.to_datetime(dates).dt.strftime("%Y-%m-%d").tolist(),
@@ -203,6 +205,12 @@ class EDO(SourceBase):
             )
             stats["Date"] = pd.to_datetime(stats["Date"])
             logging.info(f"Found {len(stats)} records in cache for EDO data.")
+            if isinstance(unique_gid2_dates["Date"].dtype, pd.PeriodDtype):
+                unique_gid2_dates = unique_gid2_dates.assign(
+                    Date=unique_gid2_dates["Date"]
+                    .dt.to_timestamp(how="end")
+                    .dt.normalize()
+                )
             unique_gid2_dates = unique_gid2_dates[
                 ~unique_gid2_dates.set_index([geo_col, "Date"]).index.isin(
                     stats.set_index([geo_col, "Date"]).index
@@ -245,7 +253,8 @@ class EDO(SourceBase):
             stats.append(stat)
 
         # Merge into dataframe
-        stats = pd.concat(stats, ignore_index=True)
+        frames = [s for s in stats if len(s)]
+        stats = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         col_map = {"mean": "SPI6"}
         stats.rename(columns=col_map, inplace=True)
 

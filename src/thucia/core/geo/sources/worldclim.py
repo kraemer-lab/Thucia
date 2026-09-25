@@ -174,6 +174,8 @@ class WorldClim(SourceBase):
             )
 
     def _get_cache_records(self, metric, dates, geo_codes, geo_col: str):
+        if isinstance(dates.dtype, pd.PeriodDtype):
+            dates = dates.dt.to_timestamp(how="end")
         df = self.cache.get_records(
             {
                 "metric": [metric] * len(dates),
@@ -239,6 +241,12 @@ class WorldClim(SourceBase):
                 logging.info(
                     f"Found {len(stats)} records in cache for metric '{metric}'."
                 )
+                if isinstance(unique_gid2_dates["Date"].dtype, pd.PeriodDtype):
+                    unique_gid2_dates = unique_gid2_dates.assign(
+                        Date=unique_gid2_dates["Date"]
+                        .dt.to_timestamp(how="end")
+                        .dt.normalize()
+                    )
                 unique_gid2_dates = unique_gid2_dates[
                     ~unique_gid2_dates.set_index([geo_col, "Date"]).index.isin(
                         stats.set_index([geo_col, "Date"]).index
@@ -290,7 +298,8 @@ class WorldClim(SourceBase):
                     f"estimated time remaining: {estimated_time_remaining}."
                 )
 
-            stats = pd.concat(stats, ignore_index=True)
+            frames = [s for s in stats if len(s)]
+            stats = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
             col_map = {f"{measure}": f"{metric}_{measure}" for measure in measures}
             stats.rename(columns=col_map, inplace=True)
 

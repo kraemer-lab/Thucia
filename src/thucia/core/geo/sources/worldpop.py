@@ -157,8 +157,11 @@ class WorldPop(SourceBase):
         for metric in metrics:
             logging.info(f"Merging population data for metric: {metric}")
 
-            # Read and merge mean climate data per region for each Date
+            # Read and merge population data per region for each Date. Within a
+            # year the raster (and thus the zonal stats) is constant, so compute
+            # them once per raster file and reuse for every date it covers.
             stats = []
+            stats_by_tif: dict = {}
             for date in unique_gid2_dates["Date"].unique():
                 date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
                 geo_codes = date_df[geo_col].tolist()
@@ -173,21 +176,25 @@ class WorldPop(SourceBase):
                 if tif_file is None:
                     continue
 
-                # Calculate zonal statistics for the regions
-                stat = self.get_cached_stats(  # cached as pop is per year
-                    tif_file,
-                    geo_codes,
-                    stats=("sum",),
-                    geo_col=geo_col,
-                    iso3=iso3,
-                    polygons=polygons,
-                ).copy()
-                if len(stat) != len(geo_codes):
-                    print(
-                        f"Warning: Expected {len(geo_codes)} stats for {date}, "
-                        f"got {len(stat)}"
-                    )
-                stat["sum"] = stat["sum"].fillna(0)  # Ensure no NaN values
+                if tif_file not in stats_by_tif:
+                    stat = self.get_cached_stats(  # cached as pop is per year
+                        tif_file,
+                        geo_codes,
+                        stats=("sum",),
+                        geo_col=geo_col,
+                        iso3=iso3,
+                        polygons=polygons,
+                    ).copy()
+                    if len(stat) != len(geo_codes):
+                        print(
+                            f"Warning: Expected {len(geo_codes)} stats for {date}, "
+                            f"got {len(stat)}"
+                        )
+                    stat["sum"] = pd.to_numeric(stat["sum"]).fillna(
+                        0
+                    )  # Ensure no NaN values
+                    stats_by_tif[tif_file] = stat
+                stat = stats_by_tif[tif_file].copy()
                 stat["Date"] = date
                 stats.append(stat)
 

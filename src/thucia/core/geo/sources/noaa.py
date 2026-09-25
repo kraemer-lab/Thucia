@@ -62,7 +62,16 @@ class NOAA(SourceBase):
         metrics: list[str] | None = None,
         measures: list[str] | None = None,
         use_cache: bool = False,
+        *,
+        geo_col: str = "GID_2",
+        iso3: str | None = None,
+        polygons=None,
     ) -> pd.DataFrame:
+        """Merge ONI by Date only.
+
+        Date-only source: the ``geo_col``/``iso3``/``polygons`` kwargs are
+        accepted for contract parity with the raster sources but ignored.
+        """
         logging.info("Merging ONI data with case data by Date...")
 
         stats = self._oni_df

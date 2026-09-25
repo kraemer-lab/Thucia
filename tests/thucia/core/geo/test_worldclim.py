@@ -295,6 +295,28 @@ def test_merge_use_cache_serves_cached_records(wc, case_df, monkeypatch):
     assert out["tmin"].tolist() == [7.5, 7.5, 7.5, 7.5]
 
 
+def test_merge_use_cache_serves_cached_records_period_dates(wc, monkeypatch, case_df):
+    # Pipeline frames carry Period dates; the cache-read path must normalise
+    # them to timestamps (regression: pd.to_datetime on PeriodDtype raised).
+    case_df_period = case_df.assign(Date=case_df["Date"].dt.to_period("M"))
+    for date in pd.to_datetime(["2020-01-31", "2020-02-29"]):
+        wc._add_cache_records(
+            "tmin",
+            _fake_stat(["X.1.1_2", "X.1.2_2"], mean_value=7.5).assign(
+                Date=date, source="CRU-TS"
+            ),
+            geo_col="GID_2",
+        )
+
+    monkeypatch.setattr(wc, "get_filename", lambda *a, **k: pytest.fail("download"))
+    monkeypatch.setattr(
+        worldclim, "raster_stats_gid2", lambda *a, **k: pytest.fail("stats")
+    )
+
+    out = wc.merge(case_df_period, metrics=["tmin"], use_cache=True)
+    assert out["tmin"].tolist() == [7.5, 7.5, 7.5, 7.5]
+
+
 def test_merge_skips_missing_raster_dates(wc, case_df, monkeypatch):
     def get_filename(metric, year, month):
         if month == 2:
