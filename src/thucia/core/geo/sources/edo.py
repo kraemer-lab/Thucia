@@ -159,11 +159,11 @@ class EDO(SourceBase):
                 records[col] = None
         self.cache.add_records(records)
 
-    def _process_date(self, args):
+    def _process_month(self, args):
         """This runs inside worker processes."""
-        date, geo_codes, tif_file, geo_col, iso3, polygons = args
+        tif_file, dates, geo_codes, geo_col, iso3, polygons = args
         try:
-            # Calculate zonal statistics for the regions
+            # Calculate zonal statistics for the region union
             stat = raster_stats_gid2(
                 tif_file,
                 geo_codes,
@@ -172,10 +172,9 @@ class EDO(SourceBase):
                 polygons=polygons,
             )
             stat = stat[stat["mean"].notna()]
-            stat["Date"] = date
-            return stat
+            return dates, stat
         except Exception as e:
-            logging.error(f"Failed on date {date}: {e}")
+            logging.error(f"Failed on dates {dates}: {e}")
             return None
 
     def merge(
@@ -219,38 +218,58 @@ class EDO(SourceBase):
             logging.info(f"Remaining records to process: {len(unique_gid2_dates)}.")
             stats = [stats]
 
-        # Download datasets and prepare jobs
+        # The raster is monthly, so the remaining dates are grouped by month:
+        # one job per raster, reused for every date it covers (a weekly grid
+        # would otherwise spawn a pool job per date).
+        dates = unique_gid2_dates["Date"].unique()
+        by_month: dict[tuple[int, int], list] = {}
+        for date in dates:
+            by_month.setdefault((date.year, date.month), []).append(date)
+
+        # Download datasets and prepare one job per month
         jobs = []
-        for date in unique_gid2_dates["Date"].unique():
-            date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
-            geo_codes = date_df[geo_col].tolist()
+        for (year, month), month_dates in by_month.items():
+            union_codes = sorted(
+                {
+                    c
+                    for d in month_dates
+                    for c in unique_gid2_dates.loc[
+                        unique_gid2_dates["Date"] == d, geo_col
+                    ]
+                }
+            )
             logging.info(
-                f"Submitting {len(geo_codes)} {geo_col} regions for date {date}."
+                f"Submitting {len(union_codes)} {geo_col} regions "
+                f"for {year}-{month:02d}."
             )
 
-            # Read the corresponding raster file for the date
+            # Read the corresponding raster file for the month
             try:
-                tif_file = self.get_filename(date.year, date.month)
+                tif_file = self.get_filename(year, month)
             except FileNotFoundError as e:
-                logging.warning(f"Raster file for {date} not found: {e}")
+                logging.warning(f"Raster file for {year}-{month:02d} not found: {e}")
                 continue
 
-            jobs.append((date, geo_codes, tif_file, geo_col, iso3, polygons))
+            jobs.append((tif_file, month_dates, union_codes, geo_col, iso3, polygons))
 
         # Run jobs in parallel
         results = []
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            future = {pool.submit(self._process_date, job): job for job in jobs}
+            future = {pool.submit(self._process_month, job): job for job in jobs}
             for fut in tqdm(as_completed(future), total=len(future)):
                 result = fut.result()
                 if result is not None:
                     results.append(result)
 
-        # Post-process results (and add records to cache)
-        for stat in results:
-            self._add_cache_records(stat, geo_col)
-            stat["Date"] = pd.to_datetime(stat["Date"])
-            stats.append(stat)
+        # Post-process results (and add records to the cache). The month's union
+        # rows are stored for every date in the month so later runs skip it.
+        for month_dates, stat in results:
+            for date in month_dates:
+                s = stat.copy()
+                s["Date"] = pd.to_datetime(date)  # normalize (Period-safe)
+                if len(s):
+                    self._add_cache_records(s, geo_col)
+                stats.append(s)
 
         # Merge into dataframe
         frames = [s for s in stats if len(s)]

@@ -81,7 +81,10 @@ By default the pipeline re-extracts zonal statistics from the downloaded
 rasters on every run. Setting `PipelineConfig.use_cache=True` makes
 `merge_covariates` read each source's SQLite stats cache first, falling back to
 extraction only on cache misses (`"real-read"` vs. `"real-fresh"` behaviour in
-the Peru exploration script).
+the Peru exploration script). WorldClim/EDO/WorldPop rasters are monthly or
+annual, so each source computes zonal stats once per raster and reuses them for
+every date the raster covers, and the month's full region union is cached for
+every date in that month — later runs skip whole months instead of re-extracting.
 
 ```{note}
 The first time you merge a covariate for a new country or period, Thucia

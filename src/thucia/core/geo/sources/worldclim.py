@@ -255,48 +255,57 @@ class WorldClim(SourceBase):
                 logging.info(f"Remaining records to process: {len(unique_gid2_dates)}.")
                 stats = [stats]
 
-            # Read and merge mean climate data per region for each Date
-            n_unique_gid2_dates = unique_gid2_dates["Date"].nunique()
-            for ix, date in enumerate(unique_gid2_dates["Date"].unique()):
-                tic = pd.Timestamp.now()
-                date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
-                geo_codes = date_df[geo_col].tolist()
+            # The raster is monthly, so the remaining dates are grouped by month:
+            # zonal stats are computed once per raster and reused for every date
+            # it covers (a weekly grid would otherwise re-extract ~4x/month).
+            # The month's union rows are cached for every date in the month,
+            # priming it so later runs skip whole months.
+            dates = unique_gid2_dates["Date"].unique()
+            by_month: dict[tuple[int, int], list] = {}
+            for date in dates:
+                by_month.setdefault((date.year, date.month), []).append(date)
+
+            for (year, month), month_dates in by_month.items():
+                union_codes = sorted(
+                    {
+                        c
+                        for d in month_dates
+                        for c in unique_gid2_dates.loc[
+                            unique_gid2_dates["Date"] == d, geo_col
+                        ]
+                    }
+                )
                 logging.info(
-                    f"Processing metric '{metric}' for {date.strftime('%Y-%m-%d')}"
-                    f" with {len(geo_codes)} {geo_col} regions."
+                    f"Processing metric '{metric}' for {year}-{month:02d}"
+                    f" with {len(union_codes)} {geo_col} regions."
                 )
 
-                # Read the corresponding raster file for the date
+                # Read the raster file for the month
                 try:
-                    tif_file, source = self.get_filename(metric, date.year, date.month)
+                    tif_file, source = self.get_filename(metric, year, month)
                 except FileNotFoundError as e:
-                    logging.warning(f"Raster file for {date} not found: {e}")
+                    logging.warning(
+                        f"Raster file for {year}-{month:02d} not found: {e}"
+                    )
                     continue
 
-                # Calculate zonal statistics for the regions
+                # Calculate zonal statistics for the region union
                 stat = raster_stats_gid2(
                     tif_file,
-                    geo_codes,
+                    union_codes,
                     geo_col=geo_col,
                     polygons=polygons,
                     iso3=iso3,
                 )
                 stat = stat[stat["mean"].notna()]
-                stat["Date"] = date
-                stat["source"] = source
 
-                self._add_cache_records(metric, stat, geo_col)
-
-                stat["Date"] = pd.to_datetime(stat["Date"])  # ensure datetime
-                stats.append(stat)
-
-                # Estimate time remaining
-                toc = pd.Timestamp.now()
-                estimated_time_remaining = (toc - tic) * (n_unique_gid2_dates - ix - 1)
-                logging.info(
-                    f"Took {toc - tic}, "
-                    f"estimated time remaining: {estimated_time_remaining}."
-                )
+                for date in month_dates:
+                    s = stat.copy()
+                    s["Date"] = pd.to_datetime(date)  # normalize (Period-safe)
+                    s["source"] = source
+                    if len(s):
+                        self._add_cache_records(metric, s, geo_col)
+                    stats.append(s)
 
             frames = [s for s in stats if len(s)]
             stats = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

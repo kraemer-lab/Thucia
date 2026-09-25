@@ -366,6 +366,72 @@ def test_merge_generic_geo_col(wc, case_df, monkeypatch):
     assert calls["polygons"] is regions
 
 
+def test_merge_dedups_raster_per_month(wc, monkeypatch):
+    # Weekly dates within one month share the monthly raster: zonal stats are
+    # computed once per (metric, month), not once per date.
+    dates = pd.to_datetime(["2020-01-04", "2020-01-11", "2020-01-18", "2020-02-01"])
+    grid = pd.DataFrame(
+        {
+            "Date": np.repeat(dates, 2),
+            "GID_2": ["X.1.1_2", "X.1.2_2"] * 4,
+            "Cases": 1.0,
+        }
+    )
+    calls = []
+
+    def fake_stats(tif, gids, geo_col="GID_2", iso3=None, polygons=None):
+        calls.append((tif, sorted(gids)))
+        return _fake_stat(gids, mean_value=22.0)
+
+    monkeypatch.setattr(
+        wc, "get_filename", lambda metric, year, month: (f"wf{month}.tif", "CRU-TS")
+    )
+    monkeypatch.setattr(worldclim, "raster_stats_gid2", fake_stats)
+
+    out = wc.merge(grid, metrics=["tmin"])
+    # One extraction per month over the month's union, not one per week.
+    assert calls == [
+        ("wf1.tif", ["X.1.1_2", "X.1.2_2"]),
+        ("wf2.tif", ["X.1.1_2", "X.1.2_2"]),
+    ]
+    # Every row filled and constant within the month.
+    assert out["tmin"].notna().all()
+    jan = out.loc[out["Date"] == pd.Timestamp("2020-01-04"), "tmin"].tolist()
+    jan_mid = out.loc[out["Date"] == pd.Timestamp("2020-01-11"), "tmin"].tolist()
+    assert jan == jan_mid == [22.0, 22.0]
+
+
+def test_merge_primes_month_cache(wc, monkeypatch):
+    # A merge over weekly dates caches the month's full union for every date,
+    # so a later run is served entirely from the cache (no download/reraster).
+    dates = pd.to_datetime(["2020-01-04", "2020-01-11"])
+    grid = pd.DataFrame(
+        {
+            "Date": np.repeat(dates, 2),
+            "GID_2": ["X.1.1_2", "X.1.2_2"] * 2,
+            "Cases": 1.0,
+        }
+    )
+
+    def fake_stats(tif, gids, geo_col="GID_2", iso3=None, polygons=None):
+        return _fake_stat(gids, mean_value=5.0)
+
+    monkeypatch.setattr(
+        wc, "get_filename", lambda metric, year, month: ("fake.tif", "CRU-TS")
+    )
+    monkeypatch.setattr(worldclim, "raster_stats_gid2", fake_stats)
+
+    wc.merge(grid, metrics=["tmin"], use_cache=True)
+
+    # Second run: fully served from the primed cache.
+    monkeypatch.setattr(wc, "get_filename", lambda *a, **k: pytest.fail("download"))
+    monkeypatch.setattr(
+        worldclim, "raster_stats_gid2", lambda *a, **k: pytest.fail("stats")
+    )
+    out = wc.merge(grid, metrics=["tmin"], use_cache=True)
+    assert out["tmin"].tolist() == [5.0, 5.0, 5.0, 5.0]
+
+
 def test__add_cache_records_pads_missing_gadm_columns(wc, tmp_path):
     # Non-GADM maps don't carry the GADM attribute columns; they must be stored
     # as NULL rather than crashing the cache insert.
