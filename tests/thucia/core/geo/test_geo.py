@@ -165,26 +165,55 @@ def test_merge_sources_calls_plugin(admin2_list):
     from thucia.core.geo import merge_sources
     from thucia.core.registry import Registry
 
+    seen = {}
+
     class FakePlugin:
         name = "fake"
         ref = "fake"
 
-        def merge(self, df, metrics):
+        def merge(
+            self,
+            df,
+            metrics,
+            measures=None,
+            use_cache=False,
+            *,
+            geo_col="GID_2",
+            iso3=None,
+            polygons=None,
+        ):
             df = df.copy()
             df["fake_col"] = 42.0
+            seen.update(geo_col=geo_col, iso3=iso3, polygons=polygons)
             return df
 
     fake_registry = Registry("covariate source")
     fake_registry.register()(FakePlugin)
+    regions = pd.DataFrame(
+        {
+            "region": ["A", "B"],
+            "COUNTRY": ["XX", "XX"],
+            "geometry": [None, None],
+        }
+    )
     with patch("thucia.core.geo.source_registry", fake_registry):
         df = pd.DataFrame(
             {
                 "Date": pd.period_range("2020-01", periods=2, freq="M"),
-                "GID_2": ["A", "B"],
-                "GID_1": ["G1", "G1"],
+                "region": ["A", "B"],
                 "Cases": [1, 2],
             }
         )
-        out = merge_sources(df, ["fake.metric"])
+        out = merge_sources(
+            df,
+            ["fake.metric"],
+            geo_col="region",
+            iso3="XX",
+            region_col="region",
+            regions=regions,
+        )
     assert "fake_col" in out.columns
     assert (out["fake_col"] == 42.0).all()
+    assert seen["geo_col"] == "region"
+    assert seen["iso3"] == "XX"
+    assert seen["polygons"] is regions

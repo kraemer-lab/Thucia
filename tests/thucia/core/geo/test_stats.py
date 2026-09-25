@@ -103,3 +103,60 @@ def test_raster_stats_gid2_missing_gpkg_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(stats, "cache_folder", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="not found"):
         stats.raster_stats_gid2("some.tif", ["X.1.1_2"])
+
+
+def test_raster_stats_gid2_explicit_polygons(monkeypatch):
+    # A caller-supplied polygon map (no GADM involvement): non-GADM codes, list
+    # of codes keyed by the map's own geo column, no iso3 required.
+    regions = pd.DataFrame(
+        {
+            "region": ["north", "south"],
+            "ADM1": ["ProvA", "ProvB"],
+            "geometry": [None, None],
+        }
+    )
+
+    def fake_zonal_stats(polys, tif, stats=None):
+        assert set(polys["region"]) == {"north", "south"}
+        assert tif == "some.tif"
+        assert stats == ["mean"]
+        return [{"mean": 1.0}, {"mean": 2.0}]
+
+    monkeypatch.setattr(stats, "zonal_stats", fake_zonal_stats)
+    monkeypatch.setattr(
+        stats.gpd, "read_file", lambda *a, **k: pytest.fail("no GADM read")
+    )
+
+    out = stats.raster_stats_gid2(
+        "some.tif",
+        ["north", "south"],
+        geo_col="region",
+        polygons=regions,
+    )
+
+    assert out["mean"].tolist() == [1.0, 2.0]
+    # The map's own attribute columns flow through; no GADM columns appear.
+    assert set(out.columns) == {"region", "ADM1", "mean"}
+    assert "geometry" not in out.columns
+
+
+def test_stats_region_only_intersection(monkeypatch):
+    # Explicit polygons are filtered down to the requested codes before zonal
+    # stats, so a map can cover more regions than the merge needs.
+    regions = pd.DataFrame(
+        {
+            "region": ["north", "south", "west"],
+            "geometry": [None] * 3,
+        }
+    )
+
+    def fake_zonal_stats(polys, tif, stats=None):
+        assert set(polys["region"]) == {"north"}
+        return [{"mean": 5.0}]
+
+    monkeypatch.setattr(stats, "zonal_stats", fake_zonal_stats)
+    out = stats.raster_stats_gid2(
+        "some.tif", ["north"], geo_col="region", polygons=regions
+    )
+    assert out["mean"].tolist() == [5.0]
+    assert out["region"].tolist() == ["north"]

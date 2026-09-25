@@ -13,6 +13,12 @@ from thucia.core.geo import merge_sources
 df = merge_sources(df, ["worldclim.*", "edo.spi6", "worldpop.pop_count"])
 ```
 
+Non-GADM geo schemes work too: raster sources extract values over the polygon
+map you supply as `PipelineConfig.regions` (a shapefile/GeoPackage with
+geometry, keyed by `region_col`), and `merge_sources`/`merge_covariates` thread
+`geo_col`/`iso3` through every plugin. GADM-shaped codes need no map — the
+cached GADM GeoPackage is used automatically.
+
 The {doc}`pipeline` applies the configured `source_specs` automatically in the
 `merge_covariates` stage.
 
@@ -43,6 +49,8 @@ The {doc}`pipeline` applies the configured `source_specs` automatically in the
   - WorldPop
   - `pop_count` (and population-estimate variants)
   - 1 km population rasters; `pop_count` feeds the incidence-rate column.
+    Per-country rasters need a country key: explicit `iso3`, the regions map's
+    `COUNTRY` column, or the GADM code prefix.
 ```
 
 ### Spec format

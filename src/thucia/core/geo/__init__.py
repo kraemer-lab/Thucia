@@ -2,6 +2,8 @@ import logging
 import re
 import unicodedata
 import warnings
+from functools import lru_cache
+from os import PathLike
 from pathlib import Path
 
 import geopandas as gpd
@@ -268,6 +270,46 @@ def _ensure_plugins_loaded() -> None:
         load_plugins()
 
 
+def _load_regions_gdf(
+    regions,
+    region_col: str | None = None,
+    geo_col: str = "GID_2",
+):
+    """Load a region map (path or in-memory frame) keyed onto ``geo_col``.
+
+    Returns the (Geo)DataFrame — attribute table plus geometry — with its key
+    column renamed to ``geo_col``, or `None` when ``regions`` is `None`. A path
+    is read once and cached; in-memory frames are used as-is (and must not be
+    mutated downstream).
+    """
+    if regions is None:
+        return None
+    if isinstance(regions, (str, PathLike)):
+        return _load_regions_path(str(Path(regions).expanduser()), region_col, geo_col)
+    gdf = regions
+    if region_col and region_col != geo_col:
+        gdf = gdf.rename(columns={region_col: geo_col})
+    if geo_col not in gdf.columns:
+        raise ValueError(
+            f"Region map has no '{geo_col}' column: pass region_col= naming the "
+            "column holding the geo codes."
+        )
+    return gdf
+
+
+@lru_cache(maxsize=None)
+def _load_regions_path(path: str, region_col: str | None, geo_col: str) -> pd.DataFrame:
+    gdf = gpd.read_file(path)
+    if region_col and region_col != geo_col:
+        gdf = gdf.rename(columns={region_col: geo_col})
+    if geo_col not in gdf.columns:
+        raise ValueError(
+            f"Region map at {path} has no '{geo_col}' column: pass region_col= "
+            "naming the column holding the geo codes."
+        )
+    return gdf
+
+
 def _freq_day_scale(freq: str) -> int:
     """Rough days-per-period for a pandas frequency (for granularity comparison)."""
     f = freq.upper()
@@ -324,7 +366,14 @@ def interpolate_covariates(
 
 
 def merge_geo_sources(
-    df: pd.DataFrame, sources: list[str], method: str = "linear"
+    df: pd.DataFrame,
+    sources: list[str],
+    method: str = "linear",
+    *,
+    geo_col: str = "GID_2",
+    iso3: str | None = None,
+    regions=None,
+    region_col: str | None = None,
 ) -> pd.DataFrame:
     """
     Add source information to the DataFrame.
@@ -336,8 +385,17 @@ def merge_geo_sources(
     method (str): Interpolation method used when a source's granularity is
                   coarser than the case-data frequency (e.g. monthly sources on
                   a weekly grid). Default "linear"; also "ffill"/"bfill".
+    geo_col (str): The geo-code column. GADM-shaped codes need no `regions`;
+                  any other scheme should supply `regions` (a map with geometry
+                  keyed by `region_col`) so raster sources can extract values.
+    iso3 (str | None): Explicit country code for per-country sources (e.g.
+                  WorldPop) and the GADM GeoPackage fallback.
+    regions: A shapefile/GeoPackage path or in-memory (Geo)DataFrame with a
+                  geometry column, keyed by `region_col` (defaults to `geo_col`).
+    region_col (str | None): The `regions` column holding the geo codes.
     """
     _ensure_plugins_loaded()
+    polygons = _load_regions_gdf(regions, region_col, geo_col)
 
     # Collate source information
     d_sources: dict[str, list[str]] = {}
@@ -353,7 +411,9 @@ def merge_geo_sources(
     for origin, fields in d_sources.items():
         plugin = source_registry.get(origin)()
         orig_cols = set(df.columns)
-        merged = plugin.merge(df, metrics=fields)
+        merged = plugin.merge(
+            df, metrics=fields, geo_col=geo_col, iso3=iso3, polygons=polygons
+        )
         new_cols = [c for c in merged.columns if c not in orig_cols]
         if not new_cols or not isinstance(merged["Date"].dtype, pd.PeriodDtype):
             df = merged
@@ -362,7 +422,9 @@ def merge_geo_sources(
         case_freq = period_freq_str(merged["Date"].dtype)
         granularity = getattr(plugin, "granularity", "M")
         if _freq_day_scale(case_freq) < _freq_day_scale(granularity):
-            merged, n_filled = interpolate_covariates(merged, new_cols, method=method)
+            merged, n_filled = interpolate_covariates(
+                merged, new_cols, gid_col=geo_col, method=method
+            )
             if n_filled:
                 warnings.warn(
                     f"Source '{origin}' is {granularity}-granular; interpolated "
@@ -619,24 +681,46 @@ def ensure_all_regions(
     return out
 
 
-def merge_sources(df, covars: list[str], method: str = "linear") -> pd.DataFrame:
+def merge_sources(
+    df,
+    covars: list[str],
+    method: str = "linear",
+    *,
+    geo_col: str = "GID_2",
+    iso3: str | None = None,
+    regions=None,
+    region_col: str | None = None,
+) -> pd.DataFrame:
     """
     Merge geographic and climatological covariates into the main DataFrame.
 
     `method` is the interpolation method used when a source's granularity is
     coarser than the case-data frequency (see merge_geo_sources).
+
+    `geo_col`, `iso3`, `regions`, and `region_col` are forwarded to each source
+    (see merge_geo_sources): GADM-shaped codes work out of the box; any other
+    geo scheme should supply a `regions` map so raster sources can extract
+    values.
     """
     categorical_covars = ["GID_1", "GID_2", "ADM1", "ADM2", "Status"]
     for covar in covars:
-        df_covar = merge_geo_sources(df, [covar], method=method)
+        df_covar = merge_geo_sources(
+            df,
+            [covar],
+            method=method,
+            geo_col=geo_col,
+            iso3=iso3,
+            regions=regions,
+            region_col=region_col,
+        )
         for cat in categorical_covars:
             if cat in df_covar.columns:
                 df_covar[cat] = df_covar[cat].astype("category")
         merge_vars = list(
-            set(["GID_2", "Date"])
+            set([geo_col, "Date"])
             | (set(df_covar.columns.tolist()) - set(df.columns.tolist()))
         )
         logging.info("Performing merge with variables: " + ", ".join(merge_vars))
-        df = df.merge(df_covar[merge_vars], on=["GID_2", "Date"], how="left")
+        df = df.merge(df_covar[merge_vars], on=[geo_col, "Date"], how="left")
         logging.info(f"After merging {covar}, there are {len(df)} records.")
     return df

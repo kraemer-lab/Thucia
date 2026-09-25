@@ -83,7 +83,17 @@ def test_merge_covariates(case_df, monkeypatch):
         name = "fake"
         ref = "fake"
 
-        def merge(self, df, metrics):
+        def merge(
+            self,
+            df,
+            metrics,
+            measures=None,
+            use_cache=False,
+            *,
+            geo_col="GID_2",
+            iso3=None,
+            polygons=None,
+        ):
             out = df.copy()
             out["fake_col"] = 42.0
             return out

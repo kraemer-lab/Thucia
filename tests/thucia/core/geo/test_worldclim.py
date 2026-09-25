@@ -239,7 +239,7 @@ def test_merge_expands_default_metrics(wc, case_df, monkeypatch):
     )
     calls = []
 
-    def fake_stats(tif, gid_2s):
+    def fake_stats(tif, gid_2s, geo_col="GID_2", iso3=None, polygons=None):
         calls.append(gid_2s)
         return _fake_stat(gid_2s, mean_value=25.0)
 
@@ -263,7 +263,9 @@ def test_merge_specific_metric_and_measures(wc, case_df, monkeypatch):
     monkeypatch.setattr(
         worldclim,
         "raster_stats_gid2",
-        lambda tif, gids: _fake_stat(gids, mean_value=10.0),
+        lambda tif, gids, geo_col="GID_2", iso3=None, polygons=None: _fake_stat(
+            gids, mean_value=10.0
+        ),
     )
     out = wc.merge(case_df, metrics=["tmin"], measures=["mean"])
     assert "tmin" in out.columns
@@ -279,6 +281,7 @@ def test_merge_use_cache_serves_cached_records(wc, case_df, monkeypatch):
             _fake_stat(["X.1.1_2", "X.1.2_2"], mean_value=7.5).assign(
                 Date=date, source="CRU-TS"
             ),
+            geo_col="GID_2",
         )
 
     # If the cache is hit, neither downloads nor zonal stats should run.
@@ -302,9 +305,59 @@ def test_merge_skips_missing_raster_dates(wc, case_df, monkeypatch):
     monkeypatch.setattr(
         worldclim,
         "raster_stats_gid2",
-        lambda tif, gids: _fake_stat(gids, mean_value=3.0),
+        lambda tif, gids, geo_col="GID_2", iso3=None, polygons=None: _fake_stat(
+            gids, mean_value=3.0
+        ),
     )
     out = wc.merge(case_df, metrics=["tmin"])
     # Only the January raster exists -> only those rows are filled.
     assert out["tmin"].notna().sum() == 2
     assert out.loc[out["Date"] == pd.Timestamp("2020-02-29"), "tmin"].isna().all()
+
+
+def test_merge_generic_geo_col(wc, case_df, monkeypatch):
+    # A non-GADM geo column: the same merge, columns keyed by `region`, with a
+    # caller-supplied polygon map threaded into raster_stats_gid2.
+    calls = {}
+
+    grid = case_df.rename(columns={"GID_2": "region"})
+    regions = pd.DataFrame({"region": ["X.1.1_2", "X.1.2_2"], "geometry": [None, None]})
+
+    def fake_stats(tif, gids, geo_col="GID_2", iso3=None, polygons=None):
+        calls["geo_col"] = geo_col
+        calls["iso3"] = iso3
+        calls["polygons"] = polygons
+        stat = _fake_stat(gids, mean_value=4.0)
+        return stat.rename(columns={"GID_2": geo_col})
+
+    monkeypatch.setattr(
+        wc, "get_filename", lambda metric, year, month: ("fake.tif", "CRU-TS")
+    )
+    monkeypatch.setattr(worldclim, "raster_stats_gid2", fake_stats)
+
+    out = wc.merge(grid, metrics=["tmin"], geo_col="region", iso3="X", polygons=regions)
+    assert "tmin" in out.columns
+    assert out["tmin"].notna().all()
+    assert "GID_2" not in out.columns
+    assert calls["geo_col"] == "region"
+    assert calls["iso3"] == "X"
+    assert calls["polygons"] is regions
+
+
+def test__add_cache_records_pads_missing_gadm_columns(wc, tmp_path):
+    # Non-GADM maps don't carry the GADM attribute columns; they must be stored
+    # as NULL rather than crashing the cache insert.
+    stat = pd.DataFrame(
+        {"region": ["north"], "mean": [3.0], "Date": pd.to_datetime(["2020-01-31"])}
+    )
+    wc._add_cache_records("tmin", stat.copy(), geo_col="region")
+    hits = wc._get_cache_records(
+        "tmin",
+        pd.Series(pd.to_datetime(["2020-01-31"])),
+        ["north"],
+        geo_col="region",
+    )
+    assert len(hits) == 1
+    assert hits["mean"].tolist() == [3.0]
+    assert hits["region"].tolist() == ["north"]
+    assert hits["GID_0"].isna().all()

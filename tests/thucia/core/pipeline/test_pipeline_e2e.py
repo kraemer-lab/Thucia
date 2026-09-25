@@ -42,15 +42,29 @@ class FakeCovariateSource:
     ref = "fake"
     granularity = "M"
 
-    def merge(self, df, metrics=None, measures=None, use_cache=False):
-        # One covariate value per (GID_2, month), placed on the last period of
+    def __init__(self):
+        self.seen = {}
+
+    def merge(
+        self,
+        df,
+        metrics=None,
+        measures=None,
+        use_cache=False,
+        *,
+        geo_col="GID_2",
+        iso3=None,
+        polygons=None,
+    ):
+        # One covariate value per (geo_col, month), placed on the last period of
         # each month; other rows are NaN so the geo layer interpolates onto
         # finer (weekly/daily) grids.
+        self.seen.update(geo_col=geo_col, iso3=iso3, polygons=polygons)
         out = df.copy()
         end = pd.PeriodIndex(out["Date"]).to_timestamp(how="end")
         month = end.to_period("M")
         last_of_month = (
-            out.groupby(["GID_2", month], observed=False)["Date"].transform("max")
+            out.groupby([geo_col, month], observed=False)["Date"].transform("max")
             == out["Date"]
         )
         for metric, base in [
@@ -372,9 +386,10 @@ def _raw_cases_non_gadm(n_periods=40, seed=0, freq="M", start="2017-01-31", seas
 def test_pipeline_e2e_non_gadm_geo_col(tmp_path, freq):
     # A generic geo naming scheme through the whole pipeline with no GADM_*
     # columns anywhere: cases_per_period -> prepare -> DuckDB round-trip ->
-    # fit -> score. Covariate sources are GADM-keyed (documented boundary) and
-    # intentionally not exercised here. The never-seen 'west'/'ProvC' categories
-    # must still be padded by the categorical-implicit region list.
+    # fit -> score. The never-seen 'west'/'ProvC' categories must still be
+    # padded by the categorical-implicit region list.
+    # (Covariate merging under a non-GADM scheme is exercised by
+    # test_pipeline_e2e_non_gadm_covariates, which needs a regions map.)
     n_periods, start, season, start_period, train_end = (
         (
             40,
@@ -454,3 +469,121 @@ def test_pipeline_e2e_non_gadm_geo_col(tmp_path, freq):
     observed = scored["Cases"].notna()
     assert np.isfinite(scored.loc[observed, "WIS"]).any()
     assert not any(c.startswith("GID_") for c in scored.columns)
+
+
+def test_pipeline_e2e_non_gadm_covariates(tmp_path, monkeypatch):
+    # Covariate merging under a non-GADM geo scheme: the regions map (attribute
+    # table + geometry) drives BOTH ensure_all_regions padding (west/east never
+    # seen in the data) and the covariate source (which extracts per-region
+    # values from the map's attribute table via the threaded polygons).
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from thucia.core.registry import Registry
+
+    class PolySource:
+        name = "poly"
+        ref = "poly"
+        granularity = "M"
+
+        def merge(
+            self,
+            df,
+            metrics=None,
+            measures=None,
+            use_cache=False,
+            *,
+            geo_col="GID_2",
+            iso3=None,
+            polygons=None,
+        ):
+            assert polygons is not None and len(polygons) >= 3
+            out = df.copy()
+            adm1 = (
+                polygons.set_index(geo_col)["ADM1"].to_dict()
+                if "ADM1" in polygons.columns
+                else {}
+            )
+            # Only regions present in the map get a covariate value.
+            out["sqrt_pop"] = out[geo_col].map(
+                lambda r: float(len(adm1)) if r in adm1 else float("nan")
+            )
+            out["pop_count"] = 10000.0  # incidence rate needs a population
+            return out
+
+    fake_registry = Registry("covariate source")
+    fake_registry.register()(PolySource)
+    monkeypatch.setattr("thucia.core.geo.source_registry", fake_registry)
+
+    raw = _raw_cases_non_gadm()
+    regions = gpd.GeoDataFrame(
+        {
+            "region": ["north", "south", "west", "east"],
+            "state": ["ProvA", "ProvB", "ProvC", "ProvD"],
+            "ADM1": ["ProvA", "ProvB", "ProvC", "ProvD"],
+            "COUNTRY": ["XX"] * 4,
+        },
+        geometry=[
+            box(0, 0, 1, 1),
+            box(1, 0, 2, 1),
+            box(2, 0, 3, 1),
+            box(3, 0, 4, 1),
+        ],
+    )
+    cfg = PipelineConfig(
+        path=tmp_path,
+        iso3="XX",
+        regions=regions,
+        region_col="region",
+        geo_col="region",
+        geo_parent="state",
+        start_date=pd.Period("2019-01", freq="M"),
+        train_end_date=pd.Period("2018-12", freq="M"),
+        horizons=[1],
+        num_samples=20,
+        source_specs=["poly.metric"],
+        lag_spec=[
+            {
+                "name": "sqrt_pop_lag_1",
+                "groupby": ["region"],
+                "column": "sqrt_pop",
+                "pipeline": [{"op": "shift", "periods": 1}],
+            }
+        ],
+    )
+
+    padded = cases_per_period(raw, cfg, freq="M")
+    # The map wins over the categorical-implicit list: both never-seen 'west'
+    # and the map-only 'east' are padded.
+    assert set(padded["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+        "east",
+    }
+
+    merged = merge_covariates(padded, cfg)
+    assert "sqrt_pop" in merged.columns
+    # Every padded region was found in the map (geometry threaded to sources).
+    assert merged["sqrt_pop"].notna().all()
+    assert (merged["sqrt_pop"] == 4.0).all()
+    assert "DIR" in merged.columns  # incidence rate
+    assert not any(c.startswith("GID_") for c in merged.columns)
+
+    inputs, cov_cols = prepare_model_inputs(merged, cfg)
+    assert {"Log_Cases", "sqrt_pop_lag_1"} <= set(inputs.columns)
+    assert inputs[cov_cols].isna().sum().sum() == 0
+
+    frame = fit_model(inputs, "baseline", cfg, db_file=None)
+    frame = frame.df if hasattr(frame, "df") else frame
+    assert sorted(frame["quantile"].unique()) == quantiles
+    assert set(frame["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+        "east",
+    }
+
+    scored = score_model(frame, cfg)
+    observed = scored["Cases"].notna()
+    assert np.isfinite(scored.loc[observed, "WIS"]).any()

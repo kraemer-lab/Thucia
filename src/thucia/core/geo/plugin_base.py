@@ -14,7 +14,7 @@ class SourceBase:
     """Base class for covariate sources (e.g. WorldClim, EDO, NOAA, WorldPop).
 
     Subclasses set ``ref`` (the registry key) and ``name``, and implement
-    ``merge(df, metrics, measures, use_cache)``.
+    ``merge(df, metrics, measures, use_cache, *, geo_col, iso3, polygons)``.
     """
 
     ref: str | None = None
@@ -29,5 +29,9 @@ class SourceBase:
         metrics: Optional[list[str]] = None,
         measures: Optional[list[str]] = None,
         use_cache: bool = False,
+        *,
+        geo_col: str = "GID_2",
+        iso3: Optional[str] = None,
+        polygons=None,
     ) -> pd.DataFrame:
         raise NotImplementedError("Source plugins must implement merge()")

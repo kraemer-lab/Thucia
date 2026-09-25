@@ -22,6 +22,7 @@ from thucia.core.cases import quantile_sum_gid
 from thucia.core.cases import r2
 from thucia.core.cases import wis
 from thucia.core.fs import DataFrame
+from thucia.core.geo import _load_regions_gdf
 from thucia.core.geo import add_incidence_rate
 from thucia.core.geo import ensure_all_regions
 from thucia.core.geo import merge_sources
@@ -95,6 +96,7 @@ def cases_per_period(
         geo_col=config.geo_col,
         geo_parent=config.geo_parent,
         iso3=config.iso3,
+        regions=_load_regions_gdf(config.regions, config.region_col, config.geo_col),
     )
     tdf = tdf.df if isinstance(tdf, DataFrame) else tdf
     if freq == "M":
@@ -131,7 +133,15 @@ def merge_covariates(
     """Merge each covariate source and add the incidence-rate column."""
     out = df.copy()
     for spec in config.source_specs:
-        merged = merge_sources(df, [spec], method=config.covariate_interpolation)
+        merged = merge_sources(
+            df,
+            [spec],
+            method=config.covariate_interpolation,
+            geo_col=config.geo_col,
+            iso3=config.iso3,
+            regions=config.regions,
+            region_col=config.region_col,
+        )
         new_cols = [c for c in merged.columns if c not in df.columns]
         out = out.merge(
             merged[[config.geo_col, "Date"] + new_cols],

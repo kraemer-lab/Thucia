@@ -3,11 +3,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from os import PathLike
 from pathlib import Path
 from typing import Any
 from typing import Optional
+from typing import Union
 
 import pandas as pd
+
+# A region map: path to a shapefile/GeoPackage (attribute table with geometry)
+# or an in-memory (Geo)DataFrame keyed by `region_col`.
+RegionsMap = Union[str, PathLike, pd.DataFrame]
 
 
 @dataclass
@@ -23,6 +29,16 @@ class PipelineConfig:
     # geo-parent **codes** to restrict forecasting to (e.g. GADM GID_1 values);
     # threaded into fit_model as geo_parent_filter.
     adm1: Optional[list[str]] = None
+
+    # Optional region map: a shapefile/GeoPackage path (or in-memory (Geo)DataFrame)
+    # with a geometry column, keyed by `region_col` holding the `geo_col` codes.
+    # It feeds both `ensure_all_regions` padding and covariate raster extraction,
+    # so non-GADM data schemes work end-to-end. GADM-shaped codes need no map
+    # (GADM GeoPackages are used directly), but supplying one for GADM data still
+    # works (the map wins where code shape is ambiguous).
+    regions: Optional[RegionsMap] = None
+    # The column of `regions` holding the geo codes (defaults to `geo_col`).
+    region_col: Optional[str] = None
 
     # Case aggregation
     cutoff_date: Optional[str | pd.Timestamp | pd.Period] = None

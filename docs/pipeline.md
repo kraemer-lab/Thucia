@@ -36,7 +36,7 @@ flowchart LR
     `future_periods` of future placeholder rows (`Cases=NaN`, `future=True`).
 * - `merge_covariates(df, config)`
   - The padded period frame.
-  - The same frame with covariate columns merged on `["GID_2", "Date"]` plus the
+  - The same frame with covariate columns merged on `[geo_col, "Date"]` plus the
     incidence-rate column `DIR`.
 * - `prepare_model_inputs(df, config)`
   - The merged frame.
@@ -98,6 +98,12 @@ commonly changed fields:
   - `"linear"`
   - How coarser-granularity covariates are interpolated onto the case grid
     (`"linear"`, `"ffill"`, or `"bfill"`).
+* - `regions` / `region_col`
+  - `None`
+  - Optional polygon map (shapefile/GeoPackage path, or in-memory GeoDataFrame)
+    keyed by `region_col` holding the `geo_col` codes. When supplied it drives
+    both region padding and raster covariate extraction, so non-GADM geo schemes
+    work end-to-end; GADM-shaped codes need no map.
 * - `geo_col` / `geo_parent`
   - `"GID_2"` / `"GID_1"`
   - Geo unit columns: `geo_col` is the forecast region, `geo_parent` its larger

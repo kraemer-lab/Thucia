@@ -135,24 +135,40 @@ class EDO(SourceBase):
 
         return tif_file
 
-    def _get_cache_records(self, dates, GID_2s):
-        return self.cache.get_records(
+    def _get_cache_records(self, dates, geo_codes, geo_col: str):
+        df = self.cache.get_records(
             {
                 "Date": pd.to_datetime(dates).dt.strftime("%Y-%m-%d").tolist(),
-                "GID_2": GID_2s,
+                "GID_2": geo_codes,
             }
         )
+        if geo_col != "GID_2":
+            df = df.rename(columns={"GID_2": geo_col})
+        return df
 
-    def _add_cache_records(self, records) -> None:
+    def _add_cache_records(self, records, geo_col: str) -> None:
         records["Date"] = records["Date"].dt.strftime("%Y-%m-%d")  # to string
+        if geo_col != "GID_2":
+            records = records.rename(columns={geo_col: "GID_2"})
+        # Non-GADM polygon maps don't carry the GADM attribute columns; the cache
+        # schema keeps them, so pad absent columns with NULL before inserting.
+        for col in self.cache_columns:
+            if col not in records.columns:
+                records[col] = None
         self.cache.add_records(records)
 
     def _process_date(self, args):
         """This runs inside worker processes."""
-        date, gid_2s, tif_file = args
+        date, geo_codes, tif_file, geo_col, iso3, polygons = args
         try:
-            # Calculate zonal statistics for the GID_2 regions
-            stat = raster_stats_gid2(tif_file, gid_2s)
+            # Calculate zonal statistics for the regions
+            stat = raster_stats_gid2(
+                tif_file,
+                geo_codes,
+                geo_col=geo_col,
+                iso3=iso3,
+                polygons=polygons,
+            )
             stat = stat[stat["mean"].notna()]
             stat["Date"] = date
             return stat
@@ -166,11 +182,15 @@ class EDO(SourceBase):
         metrics: list[str] | None = None,
         measures: list[str] | None = None,
         use_cache: bool = False,
+        *,
+        geo_col: str = "GID_2",
+        iso3: str | None = None,
+        polygons=None,
     ) -> pd.DataFrame:
         logging.info("Merging EDO data with case data...")
 
-        # Get unique GID_2 and Date combinations
-        unique_gid2_dates = df[["GID_2", "Date"]].drop_duplicates()
+        # Get unique geo-code and Date combinations
+        unique_gid2_dates = df[[geo_col, "Date"]].drop_duplicates()
 
         # Add cache hits and retun cache misses for processing
         stats = []
@@ -178,13 +198,14 @@ class EDO(SourceBase):
             logging.info(f"Checking cache for {len(unique_gid2_dates)} records.")
             stats = self._get_cache_records(
                 dates=unique_gid2_dates["Date"],
-                GID_2s=unique_gid2_dates["GID_2"],
+                geo_codes=unique_gid2_dates[geo_col],
+                geo_col=geo_col,
             )
             stats["Date"] = pd.to_datetime(stats["Date"])
             logging.info(f"Found {len(stats)} records in cache for EDO data.")
             unique_gid2_dates = unique_gid2_dates[
-                ~unique_gid2_dates.set_index(["GID_2", "Date"]).index.isin(
-                    stats.set_index(["GID_2", "Date"]).index
+                ~unique_gid2_dates.set_index([geo_col, "Date"]).index.isin(
+                    stats.set_index([geo_col, "Date"]).index
                 )
             ]
             logging.info(f"Remaining records to process: {len(unique_gid2_dates)}.")
@@ -194,8 +215,10 @@ class EDO(SourceBase):
         jobs = []
         for date in unique_gid2_dates["Date"].unique():
             date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
-            gid_2s = date_df["GID_2"].tolist()
-            logging.info(f"Submitting {len(gid_2s)} GID_2 regions for date {date}.")
+            geo_codes = date_df[geo_col].tolist()
+            logging.info(
+                f"Submitting {len(geo_codes)} {geo_col} regions for date {date}."
+            )
 
             # Read the corresponding raster file for the date
             try:
@@ -204,7 +227,7 @@ class EDO(SourceBase):
                 logging.warning(f"Raster file for {date} not found: {e}")
                 continue
 
-            jobs.append((date, gid_2s, tif_file))
+            jobs.append((date, geo_codes, tif_file, geo_col, iso3, polygons))
 
         # Run jobs in parallel
         results = []
@@ -217,7 +240,7 @@ class EDO(SourceBase):
 
         # Post-process results (and add records to cache)
         for stat in results:
-            self._add_cache_records(stat)
+            self._add_cache_records(stat, geo_col)
             stat["Date"] = pd.to_datetime(stat["Date"])
             stats.append(stat)
 
@@ -231,8 +254,8 @@ class EDO(SourceBase):
 
         # Merge with the original DataFrame
         df = df.merge(
-            stats[["GID_2", "Date", *col_map.values()]],
-            on=["GID_2", "Date"],
+            stats[[geo_col, "Date", *col_map.values()]],
+            on=[geo_col, "Date"],
             how="left",
         )
 
