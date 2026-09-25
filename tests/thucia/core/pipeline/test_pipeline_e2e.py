@@ -341,3 +341,116 @@ def test_pipeline_end_to_end_pdfm_subsamples_missing_embeddings(
         )
     assert set(out["GID_2"]) == set(covered)
     assert len(out) < len(frame)
+
+
+def _raw_cases_non_gadm(n_periods=40, seed=0, freq="M", start="2017-01-31", season=12):
+    # Line-list style input under a completely non-GADM tagging scheme: regions
+    # are 'north'/'south' with families 'ProvA'/'ProvB'. The geo columns are
+    # categorical and carry an extra never-observed category ('west'/'ProvC') so
+    # the categorical-implicit region list is exercised end-to-end.
+    rng = np.random.default_rng(seed)
+    ts_freq = "ME" if freq == "M" else freq
+    dates = pd.date_range(start, periods=n_periods, freq=ts_freq).strftime("%Y-%m-%d")
+    rows = []
+    for region, state, base in [("north", "ProvA", 50.0), ("south", "ProvB", 20.0)]:
+        for d in dates:
+            cases = int(
+                max(
+                    base * (1 + 0.5 * np.sin(2 * np.pi * len(rows) / season))
+                    + rng.uniform(-2, 2),
+                    0.0,
+                )
+            )
+            rows.append({"Date": d, "state": state, "region": region, "Cases": cases})
+    df = pd.DataFrame(rows)
+    df["region"] = pd.Categorical(df["region"], categories=["north", "south", "west"])
+    df["state"] = pd.Categorical(df["state"], categories=["ProvA", "ProvB", "ProvC"])
+    return df
+
+
+@pytest.mark.parametrize("freq", ["M", "W-SAT"])
+def test_pipeline_e2e_non_gadm_geo_col(tmp_path, freq):
+    # A generic geo naming scheme through the whole pipeline with no GADM_*
+    # columns anywhere: cases_per_period -> prepare -> DuckDB round-trip ->
+    # fit -> score. Covariate sources are GADM-keyed (documented boundary) and
+    # intentionally not exercised here. The never-seen 'west'/'ProvC' categories
+    # must still be padded by the categorical-implicit region list.
+    n_periods, start, season, start_period, train_end = (
+        (
+            40,
+            "2017-01-31",
+            12,
+            pd.Period("2019-01", freq="M"),
+            pd.Period("2018-12", freq="M"),
+        )
+        if freq == "M"
+        else (
+            120,
+            "2018-01-06",
+            52,
+            pd.Period("2019-12-07", freq="W-SAT"),
+            pd.Period("2019-11-30", freq="W-SAT"),
+        )
+    )
+    raw = _raw_cases_non_gadm(
+        n_periods=n_periods, freq=freq, start=start, season=season
+    )
+    cfg = PipelineConfig(
+        path=tmp_path,
+        geo_col="region",
+        geo_parent="state",
+        start_date=start_period,
+        train_end_date=train_end,
+        horizons=[1],
+        num_samples=20,
+        source_specs=[],
+        lag_spec=[
+            {
+                "name": "log_cases_lag_1",
+                "groupby": ["region"],
+                "column": "Log_Cases",
+                "pipeline": [{"op": "shift", "periods": 1}],
+            }
+        ],
+    )
+
+    padded = cases_per_period(raw, cfg, freq=freq)
+    expected_dtype = "period[M]" if freq == "M" else "period[W-SAT]"
+    assert str(padded["Date"].dtype) == expected_dtype
+    assert set(padded["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+    }
+    assert not any(c.startswith("GID_") for c in padded.columns)
+
+    inputs, cov_cols = prepare_model_inputs(padded, cfg)
+    assert {"Log_Cases", "log_cases_lag_1"} <= set(inputs.columns)
+    assert inputs.loc[~inputs["future"], "Cases"].notna().all()
+    assert inputs[cov_cols].isna().sum().sum() == 0
+    assert not any(c.startswith("GID_") for c in inputs.columns)
+
+    # DuckDB round-trip with non-GADM ENUM names preserves the padded universe.
+    write_db(inputs, tmp_path / "non_gadm_model_input")
+    restored = read_db(tmp_path / "non_gadm_model_input").df
+    assert set(restored["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+    }
+    assert restored["Date"].dtype == expected_dtype
+
+    frame = fit_model(inputs, "baseline", cfg, db_file=None)
+    frame = frame.df if hasattr(frame, "df") else frame
+    assert sorted(frame["quantile"].unique()) == quantiles
+    assert not any(c.startswith("GID_") for c in frame.columns)
+    assert set(frame["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+    }
+
+    scored = score_model(frame, cfg)
+    observed = scored["Cases"].notna()
+    assert np.isfinite(scored.loc[observed, "WIS"]).any()
+    assert not any(c.startswith("GID_") for c in scored.columns)

@@ -23,8 +23,8 @@ from thucia.core.cases import r2
 from thucia.core.cases import wis
 from thucia.core.fs import DataFrame
 from thucia.core.geo import add_incidence_rate
+from thucia.core.geo import ensure_all_regions
 from thucia.core.geo import merge_sources
-from thucia.core.geo import pad_admin2
 from thucia.core.models import get_model
 from thucia.core.models import run_model
 from thucia.core.models.ensemble import create_ensemble
@@ -57,7 +57,15 @@ def coerce_geo_cols(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame:
         if col is None or col not in df.columns:
             continue
         dtype = df[col].dtype
-        if pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype):
+        if pd.api.types.is_object_dtype(dtype):
+            continue
+        if isinstance(dtype, pd.CategoricalDtype):
+            # String categoricals remain categorical: the categories are a
+            # legitimate implicit region list that ensure_all_regions and the
+            # aggregation's observed=False grouping rely on.
+            if pd.api.types.is_string_dtype(dtype.categories.dtype):
+                continue
+        elif pd.api.types.is_string_dtype(dtype):
             continue
         df[col] = df[col].astype(str)
     return df
@@ -76,16 +84,27 @@ def cases_per_period(
     if isinstance(df, DataFrame):
         df = df.df
     coerce_geo_cols(df, config)
-    if freq == "M":
-        tdf = cases_per_month(df, cutoff_date=config.cutoff_date)
-    else:
-        tdf = aggregate_cases(df, cutoff_date=config.cutoff_date, freq=freq)
-    tdf = pad_admin2(
-        tdf,
+    # Ensure all regions BEFORE aggregation: the grid fill in aggregate_cases
+    # and the fs ENUM layer only ever see *observed* geo codes, so a never-seen
+    # region won't survive aggregation for the region list to discover later.
+    # The authoritative list (explicit roster, categorical categories, or GADM)
+    # is resolved here against the raw line-list, then aggregation runs on the
+    # padded frame so every region is present from the start.
+    tdf = ensure_all_regions(
+        df,
         geo_col=config.geo_col,
-        geo_parent=config.geo_parent or "GID_1",
+        geo_parent=config.geo_parent,
         iso3=config.iso3,
     )
+    tdf = tdf.df if isinstance(tdf, DataFrame) else tdf
+    if freq == "M":
+        tdf = cases_per_month(
+            tdf, cutoff_date=config.cutoff_date, geo_col=config.geo_col
+        )
+    else:
+        tdf = aggregate_cases(
+            tdf, cutoff_date=config.cutoff_date, freq=freq, geo_col=config.geo_col
+        )
 
     last_date = tdf["Date"].max()
     future_dates = pd.period_range(
@@ -155,7 +174,9 @@ def prepare_model_inputs(
     out = out[keep]
 
     if covariate_cols:
-        out = sanitise_covariates(out, covariate_cols, config.train_end_date)
+        out = sanitise_covariates(
+            out, covariate_cols, config.train_end_date, geo_col=config.geo_col
+        )
         check_covars_for_nans(out, covariate_cols)
     check_covars_for_nans(out[~out["future"]], [config.case_col])
     index_cols = ["Date", config.geo_col] if config.geo_col in out.columns else ["Date"]
@@ -210,9 +231,10 @@ def fit_model(
 def score_model(
     df_quantiles: pd.DataFrame,
     config: PipelineConfig,
-    geo_col: str = "GID_2",
+    geo_col: str | None = None,
 ) -> pd.DataFrame:
     """Score a quantile frame: WIS and R2 per geo and horizon."""
+    geo_col = geo_col or config.geo_col
     parts = []
     for h in config.horizons:
         dfh = df_quantiles[df_quantiles["horizon"] == h].copy()

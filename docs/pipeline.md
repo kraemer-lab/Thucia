@@ -31,7 +31,7 @@ flowchart LR
   - Consumes
   - Produces
 * - `cases_per_period(df, config, freq="M")`
-  - Raw per-case rows (`Date`, `GID_1`, `GID_2`, `Cases`).
+  - Raw per-case rows (`Date`, `GID_1`, `GID_2`, `Cases`); any `geo_col`/`geo_parent` naming works — the rows are padded to every region before aggregation.
   - A period-aggregated frame with admin-2 regions padded to a common grid and
     `future_periods` of future placeholder rows (`Cases=NaN`, `future=True`).
 * - `merge_covariates(df, config)`
@@ -101,8 +101,11 @@ commonly changed fields:
 * - `geo_col` / `geo_parent`
   - `"GID_2"` / `"GID_1"`
   - Geo unit columns: `geo_col` is the forecast region, `geo_parent` its larger
-    grouping (used for filtering/subsetting). Falls back to `"GID_1"` internally
-    if left unset.
+    grouping (used for filtering/subsetting). `geo_parent=None` omits the parent
+    column from padded rows. `cases_per_period` pads the frame to every region
+    via `ensure_all_regions`: an explicit `regions=` roster first, then the GADM
+    admin-2 list for GADM-shaped codes, then a categorical column's
+    `.cat.categories` as an implicit non-GADM region list.
 * - `train_col`
   - `None`
   - Column to fit per-region at (e.g. `GID_1` for an admin-1 fit); when `None`

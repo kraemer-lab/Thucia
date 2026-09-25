@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 from thucia.core.geo import add_incidence_rate
 from thucia.core.geo import align_admin2_regions
+from thucia.core.geo import ensure_all_regions
 from thucia.core.geo import fuzzy_match_one
-from thucia.core.geo import pad_admin2
 from thucia.core.geo import remove_accents
 
 
@@ -34,7 +34,7 @@ def test_fuzzy_match_one_exact_and_threshold():
     assert fuzzy_match_one("Completely Unrelated", refs, threshold=95) == ""
 
 
-def test_pad_admin2_adds_missing_gids(admin2_list):
+def test_ensure_all_regions_adds_missing_gids(admin2_list):
     df = pd.DataFrame(
         {
             "Date": pd.period_range("2020-01", periods=2, freq="M").repeat(2),
@@ -44,10 +44,83 @@ def test_pad_admin2_adds_missing_gids(admin2_list):
         }
     )
     with patch("thucia.core.geo.get_admin2_list", return_value=admin2_list):
-        out = pad_admin2(df)
+        out = ensure_all_regions(df)
     assert sorted(out.df["GID_2"].unique()) == sorted(admin2_list["GID_2"].tolist())
     # missing region gets zero cases
     assert (out.df[out.df["GID_2"] == "X.1.3_2"]["Cases"] == 0).all()
+
+
+def test_ensure_all_regions_generic_roster():
+    # A non-GADM tagging scheme: codes live under 'region'/'state' and the
+    # roster keys them under different names. No GID_* column may appear.
+    dates = pd.period_range("2020-01", periods=2, freq="M")
+    df = pd.DataFrame(
+        {
+            "Date": dates,
+            "region": ["north", "north"],
+            "state": ["stA", "stA"],
+            "Cases": [5, 3],
+        }
+    )
+    roster = pd.DataFrame(
+        {
+            "province": ["north", "south"],
+            "payer": ["stA", "stB"],
+            "label": ["Northland", "Southland"],
+        }
+    )
+    out = ensure_all_regions(
+        df,
+        geo_col="region",
+        geo_parent="state",
+        regions=roster,
+        region_col="province",
+        parent_col="payer",
+    )
+    f = out.df
+    assert set(f["region"].dropna().astype("object").unique()) == {"north", "south"}
+    assert (f[f["region"] == "south"]["Cases"] == 0).all()
+    assert (f[f["region"] == "south"]["state"] == "stB").all()
+    assert "GID_1" not in f.columns and "GID_2" not in f.columns
+
+
+def test_ensure_all_regions_categorical_implicit():
+    # Categorical geo column: the categories are the implicit region list, so
+    # unused categories (never-seen regions) still get padded — .unique() alone
+    # would drop them.
+    dates = pd.period_range("2020-01", periods=2, freq="M")
+    df = pd.DataFrame(
+        {
+            "Date": dates,
+            "region": pd.Categorical(
+                ["north", "north"], categories=["north", "south", "west"]
+            ),
+            "Cases": [5, 3],
+        }
+    )
+    out = ensure_all_regions(df, geo_col="region", geo_parent=None)
+    f = out.df
+    assert set(f["region"].dropna().astype("object").unique()) == {
+        "north",
+        "south",
+        "west",
+    }
+    assert (f[f["region"] == "south"]["Cases"] == 0).all()
+    assert (f[f["region"] == "west"]["Cases"] == 0).all()
+
+
+def test_ensure_all_regions_no_roster_raises():
+    # Non-categorical, non-GADM codes and no regions= roster: no region list can
+    # be resolved, so ensure_all_regions refuses to guess.
+    df = pd.DataFrame(
+        {
+            "Date": pd.period_range("2020-01", periods=2, freq="M"),
+            "region": ["north", "south"],
+            "Cases": [1, 2],
+        }
+    )
+    with pytest.raises(ValueError, match="regions="):
+        ensure_all_regions(df, geo_col="region", geo_parent=None)
 
 
 def test_add_incidence_rate():

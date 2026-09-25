@@ -1,4 +1,5 @@
 import logging
+import re
 import unicodedata
 import warnings
 from pathlib import Path
@@ -426,67 +427,191 @@ def convert_to_incidence_rate(
     return df_with_pop
 
 
-def pad_admin2(
+def _region_roster(
+    regions: pd.DataFrame,
+    *,
+    geo_col: str,
+    geo_parent: str | None,
+    region_col: str | None,
+    parent_col: str | None,
+    adm1_col: str,
+    adm2_col: str,
+    name1_col: str | None,
+    name2_col: str | None,
+) -> pd.DataFrame:
+    """Normalise a region roster onto the caller's geo column names.
+
+    ``regions`` may key its rows under any names (e.g. a GADM frame using
+    ``GID_2``/``GID_1``/``NAME_1``/``NAME_2``); they are aliased onto
+    ``geo_col``/``geo_parent``/``adm1_col``/``adm2_col`` so the padding logic is
+    column-name agnostic.
+    """
+    rename = {region_col or geo_col: geo_col}
+    if geo_parent is not None:
+        rename.setdefault(parent_col or geo_parent, geo_parent)
+    if name1_col is not None:
+        rename.setdefault(name1_col, adm1_col)
+    if name2_col is not None:
+        rename.setdefault(name2_col, adm2_col)
+    roster = regions.rename(columns=rename)
+    wanted = [geo_col]
+    if geo_parent is not None:
+        wanted.append(geo_parent)
+    for col in wanted:
+        if col not in roster.columns:
+            raise ValueError(
+                f"Region list has no '{col}' column (roster keyed by "
+                f"'{region_col or geo_col}'); cannot ensure all regions."
+            )
+    keep = wanted + [c for c in (adm1_col, adm2_col) if c in roster.columns]
+    return roster[keep].drop_duplicates(geo_col)
+
+
+def ensure_all_regions(
     df: DataFrame | pd.DataFrame,
     *,
     geo_col: str = "GID_2",
-    geo_parent: str = "GID_1",
+    geo_parent: str | None = "GID_1",
     iso3: str | None = None,
+    regions: pd.DataFrame | None = None,
+    region_col: str | None = None,
+    parent_col: str | None = None,
+    adm1_col: str = "ADM1",
+    adm2_col: str = "ADM2",
+    name1_col: str | None = "NAME_1",
+    name2_col: str | None = "NAME_2",
 ) -> DataFrame:
     """
-    Ensure all Admin-2 regions are included in the DataFrame, even those with zero
-    cases.
+    Ensure every region in ``geo_col`` appears in the DataFrame, even those with
+    zero cases in every period.
+
+    The authoritative region list is resolved as:
+
+    - ``regions``: a roster DataFrame such as a shapefile attribute table,
+      keyed by ``region_col``/``parent_col`` (and the name columns when you want
+      ADM1/ADM2 names carried into the padded rows);
+    - the GADM admin-2 list for ``iso3`` (or the geo-code prefix) when
+      ``regions`` is omitted and the geo codes are GADM-shaped — this applies to
+      categorical codes too, since an aggregated frame's categories only ever
+      reflect observed regions;
+    - if ``df[geo_col]`` is a categorical with non-GADM codes, its
+      ``.cat.categories`` form an implicit region list; or
+    - otherwise a ``ValueError`` is raised — callers that want a subset simply do
+      not run this function.
     """
 
     if isinstance(df, DataFrame):
-        df = df.df  # convert to pandas DataFrame (quick fix, consider function rewrite)
+        df = df.df
 
     if geo_col not in df.columns:
         raise ValueError(f"DataFrame must contain '{geo_col}' column.")
 
-    # Get unique Admin-2 regions
-    if iso3 is None:
-        # Fall back to deriving the ISO3 from the first geo code (GADM-native).
-        iso3 = str(df[geo_col].iloc[0])[:3]
-    unique_admin2 = df[geo_col].unique()
-    all_admin2 = get_admin2_list(iso3)
+    observed_code = str(df[geo_col].dropna().iloc[0])
+    gadm_shaped = bool(re.match(r"^[A-Za-z0-9]{1,3}\.\d+(\.\d+)?_\d+$", observed_code))
 
-    # Find missing Admin-2 regions
-    missing_admin2 = set(all_admin2[geo_col].unique()) - set(unique_admin2)
-    date_list = list(df["Date"].drop_duplicates().sort_values())
-    n_dates = len(date_list)
+    if regions is not None:
+        roster = _region_roster(
+            regions,
+            geo_col=geo_col,
+            geo_parent=geo_parent,
+            region_col=region_col,
+            parent_col=parent_col,
+            adm1_col=adm1_col,
+            adm2_col=adm2_col,
+            name1_col=name1_col,
+            name2_col=name2_col,
+        )
+    elif gadm_shaped:
+        # GADM-shaped codes take the GADM admin-2 list even when the column is
+        # categorical: aggregation re-derives categories from observed data, so
+        # never-seen regions are invisible to `.cat.categories`.
+        if iso3 is None:
+            iso3 = observed_code[:3]
+        roster = _region_roster(
+            get_admin2_list(iso3),
+            geo_col=geo_col,
+            geo_parent=geo_parent,
+            region_col="GID_2",
+            parent_col="GID_1",
+            adm1_col=adm1_col,
+            adm2_col=adm2_col,
+            name1_col="NAME_1",
+            name2_col="NAME_2",
+        )
+    elif isinstance(df[geo_col].dtype, pd.CategoricalDtype):
+        # Non-GADM categorical: the categories are the implicit region list.
+        roster = pd.DataFrame({geo_col: list(df[geo_col].cat.categories)})
+        for col in (geo_parent, adm1_col, adm2_col):
+            if col is None or col not in df.columns:
+                continue
+            roster = roster.merge(
+                df.drop_duplicates(geo_col)[[geo_col, col]].dropna(subset=[geo_col]),
+                on=geo_col,
+                how="left",
+            )
+        if geo_parent is not None and geo_parent not in roster.columns:
+            roster[geo_parent] = None
+    else:
+        # No roster, not GADM-shaped, not categorical: no region list can be
+        # resolved. Callers that want a subset simply do not run this function.
+        raise ValueError(
+            f"Cannot resolve the region list: '{geo_col}' has no regions= roster "
+            f"and code {observed_code!r} does not look GADM-shaped, nor is the "
+            "column categorical. Pass regions=... (e.g. a shapefile attribute "
+            "table) or make the geo column a categorical to pad to its "
+            "categories."
+        )
 
-    # Create a DataFrame for missing regions with zero cases
-    missing_df = []
-    for adm2 in missing_admin2:
-        df_entry = pd.DataFrame(
-            {
-                "Date": date_list,
-                geo_parent: [
-                    all_admin2[geo_parent][all_admin2[geo_col] == adm2].values[0]
-                ]
-                * n_dates,
-                geo_col: [adm2] * n_dates,
+    # Observed set comes from the *present* values: on a categorical, `.unique()`
+    # drops unused categories, so the roster codes stay authoritative for the
+    # no-miss guarantee.
+    roster_codes = roster[geo_col].dropna().astype("object").unique()
+    observed = set(df[geo_col].dropna().astype("object").unique())
+    missing = [c for c in roster_codes if c not in observed]
+
+    missing_frames = []
+    if missing:
+        dates = list(df["Date"].drop_duplicates().sort_values())
+        n_dates = len(dates)
+        roster_by_zone = roster.set_index(geo_col)
+
+        def _value(zone, col):
+            val = roster_by_zone.loc[zone, col]
+            return val.iloc[0] if isinstance(val, pd.Series) else val
+
+        for zone in missing:
+            row = {
+                "Date": dates,
+                geo_col: [zone] * n_dates,
                 "Cases": [0] * n_dates,
             }
-        )
-        if "ADM1" in df.columns:
-            df_entry["ADM1"] = all_admin2["NAME_1"][all_admin2[geo_col] == adm2].values[
-                0
-            ]
-        if "ADM2" in df.columns:
-            df_entry["ADM2"] = all_admin2["NAME_2"][all_admin2[geo_col] == adm2].values[
-                0
-            ]
-        missing_df.append(df_entry)
+            if geo_parent is not None:
+                parent = _value(zone, geo_parent)
+                # Omit the column when the parent is unknown: leaving it out makes
+                # the concat fill NaN for those rows instead of passing an
+                # all-NA column through concat (which pandas deprecates).
+                if not pd.isna(parent):
+                    row[geo_parent] = [parent] * n_dates
+            for col in (adm1_col, adm2_col):
+                if col in df.columns and col in roster_by_zone.columns:
+                    val = _value(zone, col)
+                    if not pd.isna(val):
+                        row[col] = [val] * n_dates
+            missing_frames.append(pd.DataFrame(row))
 
-    # Concatenate the original DataFrame with the missing regions
     result = (
-        pd.concat([df, *missing_df], ignore_index=True)
-        .sort_values(["Date", geo_col])
-        .reset_index(drop=True)
+        pd.concat([df, *missing_frames], ignore_index=True)
+        if missing_frames
+        else df.copy()
     )
-    result.sort_values(by=["Date", geo_col], inplace=True)
+    if isinstance(df[geo_col].dtype, pd.CategoricalDtype):
+        categories = list(df[geo_col].cat.categories) + [
+            c for c in roster_codes if c not in set(df[geo_col].cat.categories)
+        ]
+        result[geo_col] = pd.Categorical(
+            result[geo_col].astype("object"), categories=categories
+        )
+    result = result.sort_values(["Date", geo_col]).reset_index(drop=True)
 
     # Convert to Thucia DataFrame and clean up
     out = DataFrame(df=result)
