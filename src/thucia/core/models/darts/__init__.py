@@ -207,7 +207,11 @@ class DartsBase:
         geo_col: str | None = None,
     ) -> DataFrame | pd.DataFrame:
         geo_col = geo_col or self.geo_col
-        gid_list = self.df[geo_col].unique().tolist()
+        gid_list = [
+            gid
+            for gid in self.df[geo_col].unique().tolist()
+            if gid not in self.rejected_gids
+        ]
         for ix, gid in enumerate(gid_list):
             logging.info(f"Processing {geo_col}: {gid}...")
             tic = pd.Timestamp.now()
@@ -333,6 +337,11 @@ class DartsBase:
         # Model pre-fit
         all_target_gids = df[self.geo_col].unique()
         target_gids = [gid for gid in all_target_gids if gid not in self.rejected_gids]
+        if not target_gids:
+            logging.info(
+                f"No non-rejected {self.geo_col} regions to fit; skipping predictions."
+            )
+            return tdf_out
         self.pre_fit(target_gids=target_gids)
 
         # Now include future data for forecasting, ensuring the same GID mapping

@@ -115,9 +115,7 @@ def test_merge_dedups_raster_per_month(edo, monkeypatch, sync_pool):
     )
     monkeypatch.setattr(edo_mod, "raster_stats_gid2", fake_stats)
 
-    grid = _weekly_grid(
-        ["2020-01-04", "2020-01-11", "2020-01-18", "2020-02-01"]
-    )
+    grid = _weekly_grid(["2020-01-04", "2020-01-11", "2020-01-18", "2020-02-01"])
     out = edo.merge(grid)
     assert calls == [
         ("spc_202001.tif", ["X.1.1_2", "X.1.2_2"]),
