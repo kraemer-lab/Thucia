@@ -116,11 +116,13 @@ out = run_model("sarima", model, prepared_df, path="my_run")
 # writes `sarima_cases_quantiles.duckdb`
 ```
 
-Every model shares a common signature (`df, start_date, end_date, gid_1,
-horizons=[...], case_col, covariate_cols, retrain, db_file,
-model_admin_level, multivariate, num_samples`) plus model-specific knobs such
-as `season_length`. Keep `horizons` as a **list** — the pipeline and backtest
-pass multi-horizon lists to every model.
+Every model shares a common signature (`df, start_date, end_date, geo_col,
+geo_parent, geo_parent_filter, horizons=[...], case_col, covariate_cols,
+retrain, db_file, train_col, multivariate, num_samples`) plus model-specific
+knobs such as `season_length`. `geo_col` names the forecast region, `geo_parent`
+its larger grouping, and `train_col` the column to fit per-region at (`None`
+means a whole-dataset fit). Keep `horizons` as a **list** — the pipeline and
+backtest pass multi-horizon lists to every model.
 
 ## Declarative metadata (ModelSpec)
 

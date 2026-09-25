@@ -11,6 +11,33 @@ from thucia.core.geo.plugin_base import SourceBase
 from thucia.core.geo.stats import raster_stats_gid2
 
 
+def resolve_country_key(iso3, polygons, geo_codes, country_col: str = "COUNTRY"):
+    """Resolve the single-country key WorldPop needs to pick its raster.
+
+    Precedence: an explicit ``iso3``, else a single unique value in the regions
+    map's ``country_col``, else the GADM code prefix (reproduces the historic
+    ``GID_1``-derived country), else a ``ValueError``.
+    """
+    if iso3:
+        return iso3
+    if polygons is not None and country_col in polygons.columns:
+        values = [str(v) for v in polygons[country_col].dropna().unique().tolist()]
+        if len(values) != 1:
+            raise ValueError(
+                f"WorldPop needs a single country: the regions map's "
+                f"'{country_col}' column has {len(values)} unique values. "
+                "Pass iso3= to disambiguate."
+            )
+        return values[0]
+    prefixes = {str(c).split(".")[0] for c in geo_codes}
+    if len(prefixes) == 1:
+        return prefixes.pop()
+    raise ValueError(
+        "WorldPop needs a single-country key: pass iso3=, add a "
+        f"'{country_col}' column to the regions map, or use GADM-shaped codes."
+    )
+
+
 @source_registry.register()
 class WorldPop(SourceBase):
     ref = "worldpop"
@@ -80,8 +107,22 @@ class WorldPop(SourceBase):
         return tif_file
 
     @lru_cache(maxsize=500)
-    def get_cached_stats(self, tif_file, gid_2s, stats):
+    def _get_cached_stats_gadm(self, tif_file, gid_2s, stats):
         return raster_stats_gid2(tif_file, list(gid_2s), stats=list(stats))
+
+    def get_cached_stats(self, tif_file, geo_codes, stats, geo_col, iso3, polygons):
+        if polygons is not None or geo_col != "GID_2":
+            return raster_stats_gid2(
+                tif_file,
+                list(geo_codes),
+                stats=list(stats),
+                geo_col=geo_col,
+                iso3=iso3,
+                polygons=polygons,
+            )
+        return self._get_cached_stats_gadm(
+            tif_file, tuple(geo_codes), stats=tuple(stats)
+        )
 
     def merge(
         self,
@@ -89,6 +130,10 @@ class WorldPop(SourceBase):
         metrics: list[str] | None = None,
         measures: list[str] | None = None,
         use_cache: bool = False,
+        *,
+        geo_col: str = "GID_2",
+        iso3: str | None = None,
+        polygons=None,
     ) -> pd.DataFrame:
         logging.info("Merging population data with case data...")
 
@@ -103,21 +148,23 @@ class WorldPop(SourceBase):
         if not measures:
             measures = ["sum"]
 
-        # Get unique GID_2 and Date combinations
-        unique_gid2_dates = df[["GID_2", "Date"]].drop_duplicates()
-        unique_gid1s = df["GID_1"].str.split(".", expand=True)[0].unique()
-        if len(unique_gid1s) != 1:
-            raise ValueError("All records must be for the same GID_1 region.")
-        gid_1 = unique_gid1s[0]
+        # Get unique geo-code and Date combinations
+        unique_gid2_dates = df[[geo_col, "Date"]].drop_duplicates()
+        gid_1 = resolve_country_key(
+            iso3, polygons, unique_gid2_dates[geo_col].unique().tolist()
+        )
 
         for metric in metrics:
             logging.info(f"Merging population data for metric: {metric}")
 
-            # Read and merge mean climate data per region for each Date
+            # Read and merge population data per region for each Date. Within a
+            # year the raster (and thus the zonal stats) is constant, so compute
+            # them once per raster file and reuse for every date it covers.
             stats = []
+            stats_by_tif: dict = {}
             for date in unique_gid2_dates["Date"].unique():
                 date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
-                gid_2s = date_df["GID_2"].tolist()
+                geo_codes = date_df[geo_col].tolist()
 
                 # Read the corresponding raster file for the date
                 try:
@@ -129,15 +176,25 @@ class WorldPop(SourceBase):
                 if tif_file is None:
                     continue
 
-                # Calculate zonal statistics for the GID_2 regions
-                stat = self.get_cached_stats(  # cached as pop is per year
-                    tif_file, tuple(gid_2s), stats=tuple(["sum"])
-                ).copy()
-                if len(stat) != len(gid_2s):
-                    print(
-                        f"Warning: Expected {len(gid_2s)} stats for {date}, got {len(stat)}"
-                    )
-                stat["sum"] = stat["sum"].fillna(0)  # Ensure no NaN values
+                if tif_file not in stats_by_tif:
+                    stat = self.get_cached_stats(  # cached as pop is per year
+                        tif_file,
+                        geo_codes,
+                        stats=("sum",),
+                        geo_col=geo_col,
+                        iso3=iso3,
+                        polygons=polygons,
+                    ).copy()
+                    if len(stat) != len(geo_codes):
+                        print(
+                            f"Warning: Expected {len(geo_codes)} stats for {date}, "
+                            f"got {len(stat)}"
+                        )
+                    stat["sum"] = pd.to_numeric(stat["sum"]).fillna(
+                        0
+                    )  # Ensure no NaN values
+                    stats_by_tif[tif_file] = stat
+                stat = stats_by_tif[tif_file].copy()
                 stat["Date"] = date
                 stats.append(stat)
 
@@ -156,8 +213,8 @@ class WorldPop(SourceBase):
 
             # Merge with the original DataFrame
             df = df.merge(
-                stats[["GID_2", "Date", *col_map.values()]],
-                on=["GID_2", "Date"],
+                stats[[geo_col, "Date", *col_map.values()]],
+                on=[geo_col, "Date"],
                 how="left",
             )
 

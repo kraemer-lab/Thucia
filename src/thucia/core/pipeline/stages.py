@@ -22,10 +22,10 @@ from thucia.core.cases import quantile_sum_gid
 from thucia.core.cases import r2
 from thucia.core.cases import wis
 from thucia.core.fs import DataFrame
+from thucia.core.geo import _load_regions_gdf
 from thucia.core.geo import add_incidence_rate
-from thucia.core.geo import lookup_gid1
+from thucia.core.geo import ensure_all_regions
 from thucia.core.geo import merge_sources
-from thucia.core.geo import pad_admin2
 from thucia.core.models import get_model
 from thucia.core.models import run_model
 from thucia.core.models.ensemble import create_ensemble
@@ -35,7 +35,41 @@ from thucia.core.models.utils.covariates import build_features
 
 from .config import PipelineConfig
 
-BASE_COLUMNS = ("Date", "GID_1", "GID_2", "future", "Cases")
+
+def base_columns(config: PipelineConfig) -> tuple[str, ...]:
+    """Columns that are structural, not covariates.
+
+    ``Date``, the geo column, ``future`` and ``Cases`` are always base; the
+    geo-parent column is included only when the config declares one.
+    """
+    cols = ["Date", config.geo_col, "future", "Cases"]
+    if config.geo_parent:
+        cols.insert(1, config.geo_parent)
+    return tuple(cols)
+
+
+def coerce_geo_cols(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame:
+    """Coerce the geo code columns to ``str`` (geo codes are strings).
+
+    Applied at pipeline entry so downstream joins, group-bys and ENUM writes
+    all see the same string-typed codes regardless of the loader's dtype.
+    """
+    for col in (config.geo_col, config.geo_parent):
+        if col is None or col not in df.columns:
+            continue
+        dtype = df[col].dtype
+        if pd.api.types.is_object_dtype(dtype):
+            continue
+        if isinstance(dtype, pd.CategoricalDtype):
+            # String categoricals remain categorical: the categories are a
+            # legitimate implicit region list that ensure_all_regions and the
+            # aggregation's observed=False grouping rely on.
+            if pd.api.types.is_string_dtype(dtype.categories.dtype):
+                continue
+        elif pd.api.types.is_string_dtype(dtype):
+            continue
+        df[col] = df[col].astype(str)
+    return df
 
 
 def cases_per_period(
@@ -48,11 +82,31 @@ def cases_per_period(
     Returns the padded frame (historical rows plus `future_months` of future
     placeholder rows with NaN Cases and ``future=True``).
     """
+    if isinstance(df, DataFrame):
+        df = df.df
+    coerce_geo_cols(df, config)
+    # Ensure all regions BEFORE aggregation: the grid fill in aggregate_cases
+    # and the fs ENUM layer only ever see *observed* geo codes, so a never-seen
+    # region won't survive aggregation for the region list to discover later.
+    # The authoritative list (explicit roster, categorical categories, or GADM)
+    # is resolved here against the raw line-list, then aggregation runs on the
+    # padded frame so every region is present from the start.
+    tdf = ensure_all_regions(
+        df,
+        geo_col=config.geo_col,
+        geo_parent=config.geo_parent,
+        iso3=config.iso3,
+        regions=_load_regions_gdf(config.regions, config.region_col, config.geo_col),
+    )
+    tdf = tdf.df if isinstance(tdf, DataFrame) else tdf
     if freq == "M":
-        tdf = cases_per_month(df, cutoff_date=config.cutoff_date)
+        tdf = cases_per_month(
+            tdf, cutoff_date=config.cutoff_date, geo_col=config.geo_col
+        )
     else:
-        tdf = aggregate_cases(df, cutoff_date=config.cutoff_date, freq=freq)
-    tdf = pad_admin2(tdf)
+        tdf = aggregate_cases(
+            tdf, cutoff_date=config.cutoff_date, freq=freq, geo_col=config.geo_col
+        )
 
     last_date = tdf["Date"].max()
     future_dates = pd.period_range(
@@ -69,7 +123,7 @@ def cases_per_period(
         future["Cases"] = np.nan
         future["future"] = True
         out = pd.concat([out, future], ignore_index=True)
-    return out.sort_values(by=["Date", "GID_2"]).reset_index(drop=True)
+    return out.sort_values(by=["Date", config.geo_col]).reset_index(drop=True)
 
 
 def merge_covariates(
@@ -79,11 +133,20 @@ def merge_covariates(
     """Merge each covariate source and add the incidence-rate column."""
     out = df.copy()
     for spec in config.source_specs:
-        merged = merge_sources(df, [spec], method=config.covariate_interpolation)
+        merged = merge_sources(
+            df,
+            [spec],
+            method=config.covariate_interpolation,
+            geo_col=config.geo_col,
+            iso3=config.iso3,
+            regions=config.regions,
+            region_col=config.region_col,
+            use_cache=config.use_cache,
+        )
         new_cols = [c for c in merged.columns if c not in df.columns]
         out = out.merge(
-            merged[["GID_2", "Date"] + new_cols],
-            on=["GID_2", "Date"],
+            merged[[config.geo_col, "Date"] + new_cols],
+            on=[config.geo_col, "Date"],
             how="left",
         )
     return add_incidence_rate(out)
@@ -99,7 +162,7 @@ def prepare_model_inputs(
     features are built via ``build_features``; otherwise every non-base column
     of the input is treated as a covariate.
     """
-    out = df.copy()
+    out = coerce_geo_cols(df, config).copy()
     out[config.case_col] = np.log1p(out["Cases"])
 
     if config.lag_spec:
@@ -109,19 +172,25 @@ def prepare_model_inputs(
         ]
     else:
         covariate_cols = [
-            c for c in out.columns if c not in set(BASE_COLUMNS) | {config.case_col}
+            c
+            for c in out.columns
+            if c not in set(base_columns(config)) | {config.case_col}
         ]
 
     keep = [
-        c for c in [*BASE_COLUMNS, config.case_col] + covariate_cols if c in out.columns
+        c
+        for c in [*base_columns(config), config.case_col] + covariate_cols
+        if c in out.columns
     ]
     out = out[keep]
 
     if covariate_cols:
-        out = sanitise_covariates(out, covariate_cols, config.train_end_date)
+        out = sanitise_covariates(
+            out, covariate_cols, config.train_end_date, geo_col=config.geo_col
+        )
         check_covars_for_nans(out, covariate_cols)
     check_covars_for_nans(out[~out["future"]], [config.case_col])
-    index_cols = ["Date", "GID_2"] if "GID_2" in out.columns else ["Date", "GID_1"]
+    index_cols = ["Date", config.geo_col] if config.geo_col in out.columns else ["Date"]
     check_index_combinations(out, index_cols)
     return out, covariate_cols
 
@@ -136,19 +205,19 @@ def fit_model(
     """Fit a named model on prepared inputs and return the quantile frame."""
     model = get_model(model_name)
 
-    base_cols = set(BASE_COLUMNS) | {config.case_col}
+    base_cols = set(base_columns(config)) | {config.case_col}
     covariate_cols = [c for c in df.columns if c not in base_cols]
     db_file = db_file or config.path / f"{model_name}_cases_quantiles.duckdb"
 
     model_kwargs: dict[str, Any] = {
         "start_date": config.start_date,
-        "gid_1": (
-            lookup_gid1(config.iso3, config.adm1) if config.iso3 else config.adm1
-        ),
+        "geo_col": config.geo_col,
+        "geo_parent": config.geo_parent,
+        "geo_parent_filter": config.adm1,
         "horizons": config.horizons,
         "case_col": config.case_col,
         "covariate_cols": covariate_cols,
-        "model_admin_level": config.model_admin_level,
+        "train_col": config.train_col or config.geo_col,
         "db_file": db_file,
     }
     # Each model declares, via its ModelSpec, which extra config knobs it
@@ -173,9 +242,12 @@ def fit_model(
 def score_model(
     df_quantiles: pd.DataFrame,
     config: PipelineConfig,
-    geo_col: str = "GID_2",
+    geo_col: str | None = None,
 ) -> pd.DataFrame:
     """Score a quantile frame: WIS and R2 per geo and horizon."""
+    geo_col = geo_col or config.geo_col
+    if "horizon" not in df_quantiles.columns:
+        df_quantiles = df_quantiles.assign(horizon=1)
     parts = []
     for h in config.horizons:
         dfh = df_quantiles[df_quantiles["horizon"] == h].copy()
@@ -198,20 +270,20 @@ def aggregate_quantiles(
     df_quantiles: pd.DataFrame,
     config: PipelineConfig,
     *,
-    agg_col: str = "GID_1",
-    gid_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+    geo_col: str = "GID_2",
     db_file: str | Path | None = None,
     samples: int = 10000,
 ) -> DataFrame:
-    """Aggregate per-GID quantiles to a coarser admin level (MC sum)."""
+    """Aggregate per-geo quantiles to a coarser admin level (MC sum)."""
     db_file = db_file or config.path / "aggregated_cases_quantiles.duckdb"
     return quantile_sum_gid(
         df_quantiles,
         db_file=str(db_file),
         new_file=True,
         samples=samples,
-        gid_col=gid_col,
-        gid_agg_col=agg_col,
+        geo_col=geo_col,
+        geo_parent=geo_parent,
     )
 
 

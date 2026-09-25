@@ -50,7 +50,7 @@ def test_aggregate_cases_epiweek_monday():
     }
     df = pd.DataFrame(data)
 
-    result = aggregate_cases(df, fill_column="GID_2", freq="W-SAT").df
+    result = aggregate_cases(df, geo_col="GID_2", freq="W-SAT").df
 
     # Assert that Dates are periods, with month end frequency
     assert result["Date"].dtype == "period[W-SAT]"  # week end Saturday
@@ -68,7 +68,7 @@ def test_aggregate_cases_epiweek_sunday():
     }
     df = pd.DataFrame(data)
 
-    result = aggregate_cases(df, fill_column="GID_2", freq="W-SUN").df
+    result = aggregate_cases(df, geo_col="GID_2", freq="W-SUN").df
 
     # Assert that Dates are periods, with month end frequency
     assert result["Date"].dtype == "period[W-SUN]"

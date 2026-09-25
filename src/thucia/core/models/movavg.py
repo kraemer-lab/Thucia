@@ -27,16 +27,18 @@ def movavg(
     df: pd.DataFrame,
     start_date: pd.Timestamp | pd.Period = None,
     end_date: pd.Timestamp | pd.Period = None,
-    gid_1: list[str] | None = None,
+    geo_col: str = "GID_2",
+    geo_parent: str | None = "GID_1",
+    geo_parent_filter: list[str] | None = None,
     method: str = "historical",  # historical / predict
     *args,
     **kwargs,
 ) -> pd.DataFrame:
     logging.info("Starting Seasonal Moving Average model...")
 
-    # Admin-1 filter
-    if gid_1 is not None:
-        df = df[df["GID_1"].isin(gid_1)]
+    # Parent-level filter
+    if geo_parent is not None and geo_parent_filter is not None:
+        df = df[df[geo_parent].isin(geo_parent_filter)]
 
     # Determine start and end dates
     if start_date is None:
@@ -63,7 +65,7 @@ def movavg(
 
     # Combine Cases over Status=Confirmed, Probable
     df = (
-        df.groupby(["Date", "GID_2"], observed=True)
+        df.groupby(["Date", geo_col], observed=True)
         .agg({"Cases": "sum", "future": "first"})
         .reset_index()
     )
@@ -71,9 +73,9 @@ def movavg(
 
     # Interpolate missing dates
     multi_index = pd.MultiIndex.from_product(  # <-- implicit conversion to Timestamp
-        [df["GID_2"].unique(), date_range], names=["GID_2", "Date"]
+        [df[geo_col].unique(), date_range], names=[geo_col, "Date"]
     )
-    df = df.set_index(["GID_2", "Date"]).reindex(multi_index).reset_index()
+    df = df.set_index([geo_col, "Date"]).reindex(multi_index).reset_index()
 
     df["Cases"] = df["Cases"].fillna(0)
 
@@ -82,11 +84,11 @@ def movavg(
     df_forecast["Season"] = _season_unit(df_forecast["Date"], freq)
 
     df_forecast = df_forecast.groupby(
-        ["GID_2", "Year", "Season"], observed=True, as_index=False
+        [geo_col, "Year", "Season"], observed=True, as_index=False
     ).agg({"Cases": "mean", "future": "first", "Date": "first"})
 
     df_forecast["prediction"] = (
-        df_forecast.groupby(["GID_2", "Season"], observed=True)["Cases"]
+        df_forecast.groupby([geo_col, "Season"], observed=True)["Cases"]
         .apply(lambda s: s.shift(1).rolling(window=5, min_periods=5).mean())
         .reset_index(level=[0, 1], drop=True)
     )

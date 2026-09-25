@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from thucia.core.models.utils.adapter import _align_embeddings
-from thucia.core.models.utils.adapter import _ensure_gid_index
+from thucia.core.models.utils.adapter import _ensure_geo_index
 from thucia.core.models.utils.adapter import _prepare_fit_table
 from thucia.core.models.utils.adapter import _residual_regression_fit_and_apply
 from thucia.core.models.utils.adapter import HGBQuantileAdapter
@@ -91,18 +91,18 @@ def test_residual_regression_requires_feature_columns():
 # --- helper functions ---
 
 
-def test_ensure_gid_index_column_to_index():
+def test_ensure_geo_index_column_to_index():
     df = pd.DataFrame({"GID_2": ["A", "B"], "x": [1.0, 2.0]})
-    out = _ensure_gid_index(df)
+    out = _ensure_geo_index(df)
     assert out.index.name == "GID_2"
     assert "GID_2" not in out.columns
 
 
-def test_ensure_gid_index_passthrough_and_raise():
+def test_ensure_geo_index_passthrough_and_raise():
     df = _embedding_df().set_index("GID_2")
-    assert _ensure_gid_index(df) is df
+    assert _ensure_geo_index(df) is df
     with pytest.raises(ValueError, match="index or column"):
-        _ensure_gid_index(pd.DataFrame({"x": [1.0]}))
+        _ensure_geo_index(pd.DataFrame({"x": [1.0]}))
 
 
 def test_align_embeddings_missing_gid_raises():

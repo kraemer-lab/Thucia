@@ -3,11 +3,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from os import PathLike
 from pathlib import Path
 from typing import Any
 from typing import Optional
+from typing import Union
 
 import pandas as pd
+
+# A region map: path to a shapefile/GeoPackage (attribute table with geometry)
+# or an in-memory (Geo)DataFrame keyed by `region_col`.
+RegionsMap = Union[str, PathLike, pd.DataFrame]
 
 
 @dataclass
@@ -20,7 +26,19 @@ class PipelineConfig:
 
     path: str | Path = "."
     iso3: Optional[str] = None
+    # geo-parent **codes** to restrict forecasting to (e.g. GADM GID_1 values);
+    # threaded into fit_model as geo_parent_filter.
     adm1: Optional[list[str]] = None
+
+    # Optional region map: a shapefile/GeoPackage path (or in-memory (Geo)DataFrame)
+    # with a geometry column, keyed by `region_col` holding the `geo_col` codes.
+    # It feeds both `ensure_all_regions` padding and covariate raster extraction,
+    # so non-GADM data schemes work end-to-end. GADM-shaped codes need no map
+    # (GADM GeoPackages are used directly), but supplying one for GADM data still
+    # works (the map wins where code shape is ambiguous).
+    regions: Optional[RegionsMap] = None
+    # The column of `regions` holding the geo codes (defaults to `geo_col`).
+    region_col: Optional[str] = None
 
     # Case aggregation
     cutoff_date: Optional[str | pd.Timestamp | pd.Period] = None
@@ -38,13 +56,25 @@ class PipelineConfig:
     # Interpolation method for coarser-granularity sources onto finer case grids
     # ("linear" default; also "ffill"/"bfill").
     covariate_interpolation: str = "linear"
+    # Read covariate values from the SQLite stats cache where present (sources
+    # fall back to raster extraction on cache misses). False re-extracts zonal
+    # statistics every run (the downloaded rasters themselves stay cached).
+    use_cache: bool = False
 
     # Model fitting
     start_date: Optional[str | pd.Period] = None
     train_start_date: Optional[str | pd.Period] = None
     train_end_date: Optional[str | pd.Period] = None
     horizons: list[int] = field(default_factory=lambda: [1, 3, 6, 12])
-    model_admin_level: int = 2
+    # The column holding the finest geographic unit being modelled (defaults to
+    # GADM admin-2 codes) and, when set, its coarser parent column (GADM
+    # admin-1). Set `geo_parent=None` when the data has no parent column.
+    geo_col: str = "GID_2"
+    geo_parent: Optional[str] = "GID_1"
+    # Optional column name to fit per-region at a *different* resolution than
+    # `geo_col` (e.g. train per GID_1 but forecast per GID_2). None keeps the
+    # default per-`geo_col` fitting.
+    train_col: Optional[str] = None
     case_col: str = "Log_Cases"
     num_samples: int = 200
     retrain: bool = False

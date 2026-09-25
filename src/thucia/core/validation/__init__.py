@@ -120,13 +120,13 @@ def _fit_quantiles(
     return frame[frame["Date"] > cutoff]
 
 
-def _rmse_by_gid_horizon(holdout: pd.DataFrame) -> pd.DataFrame:
-    """Per (GID, horizon) RMSE of the median prediction vs observed Cases."""
+def _rmse_by_gid_horizon(holdout: pd.DataFrame, geo_col: str = "GID_2") -> pd.DataFrame:
+    """Per (geo, horizon) RMSE of the median prediction vs observed Cases."""
     median = holdout[holdout["quantile"] == 0.5]
     if median.empty:
-        return pd.DataFrame(columns=["GID_2", "horizon", "RMSE"])
+        return pd.DataFrame(columns=[geo_col, "horizon", "RMSE"])
     rmse = (
-        median.groupby(["GID_2", "horizon"], observed=False)
+        median.groupby([geo_col, "horizon"], observed=False)
         .apply(
             lambda d: float(np.sqrt(np.mean((d["prediction"] - d["Cases"]) ** 2))),
             include_groups=False,
@@ -158,7 +158,9 @@ def _skill_vs_reference(
         except ValueError:
             continue
         scored = score_model(
-            holdout, dataclasses.replace(config, train_end_date=cutoff)
+            holdout,
+            dataclasses.replace(config, train_end_date=cutoff),
+            geo_col=config.geo_col,
         )
         ref_rows.append(
             scored.groupby("horizon", observed=False)["WIS"]
@@ -256,11 +258,11 @@ def run_backtest(
                 continue
 
             cfg = dataclasses.replace(config, train_end_date=cutoff)
-            scored = score_model(holdout, cfg)
+            scored = score_model(holdout, cfg, geo_col=config.geo_col)
             scored["cutoff"] = cutoff
             scored = scored.merge(
-                _rmse_by_gid_horizon(holdout).assign(cutoff=cutoff),
-                on=["cutoff", "GID_2", "horizon"],
+                _rmse_by_gid_horizon(holdout, config.geo_col).assign(cutoff=cutoff),
+                on=["cutoff", config.geo_col, "horizon"],
                 how="left",
             )
             score_rows.append(scored)
@@ -279,7 +281,16 @@ def run_backtest(
             )
 
     empty = pd.DataFrame(
-        columns=["cutoff", "GID_2", "Date", "horizon", "WIS", "Cases", "R2", "RMSE"]
+        columns=[
+            "cutoff",
+            config.geo_col,
+            "Date",
+            "horizon",
+            "WIS",
+            "Cases",
+            "R2",
+            "RMSE",
+        ]
     )
     if not score_rows:
         return BacktestResult(empty, _empty_summary(), forecasts or None)

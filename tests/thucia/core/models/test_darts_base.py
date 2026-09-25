@@ -69,7 +69,7 @@ def test_quantile_output_schema_and_parsing(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=2
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
         )
     )
     assert {
@@ -99,7 +99,7 @@ def test_samples_output_converted_to_canonical_quantiles(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=2
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
         )
     )
     assert sorted(out["quantile"].unique()) == pytest.approx(quantiles)
@@ -119,7 +119,7 @@ def test_horizon_labels(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=2
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
         )
     )
     assert sorted(out["horizon"].unique()) == [1, 3]
@@ -135,14 +135,14 @@ def test_admin_level_2_groups_by_gid2(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=2
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
         )
     )
     assert set(out["GID_2"].unique()) == set(df["GID_2"].unique())
 
 
 def test_admin_level_1_groups_by_gid1(df):
-    # model_admin_level=1 trains per GID_1; output is still keyed by GID_2
+    # train_col="GID_1" trains per GID_1; output is still keyed by GID_2
     m = MockDarts(
         df=df,
         case_col="Log_Cases",
@@ -152,7 +152,7 @@ def test_admin_level_1_groups_by_gid1(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=1
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_1"
         )
     )
     assert len(out) > 0
@@ -169,10 +169,35 @@ def test_admin_level_0_country(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=0
+            start_date=pd.Period("2020-01", freq="M"), train_col=None
         )
     )
     assert len(out) > 0
+
+
+def test_rejected_zero_incidence_regions_skipped(df):
+    # A region with zero cases across the training period is rejected by
+    # identify_noincidence_regions(); the per-region fit must skip it instead
+    # of crashing on an empty target series list (regression: darts
+    # series2seq raised IndexError when fit() received an empty series).
+    zero_gid = df["GID_2"].cat.categories[0]
+    df = df.copy()
+    mask = df["GID_2"] == zero_gid
+    df.loc[mask, ["Cases", "Log_Cases"]] = 0.0
+    m = MockDarts(
+        df=df,
+        case_col="Log_Cases",
+        geo_col="GID_2",
+        horizons=[1],
+        covariate_cols=["tmin", "prec"],
+    )
+    assert zero_gid in m.rejected_gids
+    out = _as_df(
+        m.historical_predictions(
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
+        )
+    )
+    assert set(out["GID_2"].unique()) == set(df["GID_2"].unique()) - {zero_gid}
 
 
 def test_geo_col_coerced_to_categorical():
@@ -194,7 +219,7 @@ def test_multivariate_path(df):
     )
     out = _as_df(
         m.historical_predictions(
-            start_date=pd.Period("2020-01", freq="M"), model_admin_level=2
+            start_date=pd.Period("2020-01", freq="M"), train_col="GID_2"
         )
     )
     assert len(out) > 0
@@ -221,9 +246,7 @@ def test_cadence_anchor_preserved(freq, start, forecast_from):
         horizons=[1],
         covariate_cols=["tmin", "prec"],
     )
-    out = _as_df(
-        m.historical_predictions(start_date=forecast_from, model_admin_level=2)
-    )
+    out = _as_df(m.historical_predictions(start_date=forecast_from, train_col="GID_2"))
     assert str(out["Date"].dtype) == str(df["Date"].dtype)
     assert sorted(out["quantile"].unique()) == pytest.approx([0.025, 0.5, 0.975])
     assert np.isfinite(out["prediction"]).all()

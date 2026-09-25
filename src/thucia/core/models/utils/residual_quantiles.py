@@ -15,7 +15,7 @@ def add_residual_quantiles(
     df: pd.DataFrame,
     *,
     date_col: str = "Date",
-    gid_col: str = "GID_2",
+    geo_col: str = "GID_2",
     y_col: str = "Cases",
     pred_col: str = "prediction",
     horizon_col: str = "horizon",
@@ -28,7 +28,7 @@ def add_residual_quantiles(
     """
     Post-hoc predictive distribution from deterministic forecasts via residual quantiles.
     Returns a long dataframe with columns:
-      [Date, GID_2, horizon, quantile, prediction]
+      [Date, geo_col, horizon, quantile, prediction]
     """
     if horizon_col not in df.columns:
         # df = df.copy()
@@ -52,7 +52,7 @@ def add_residual_quantiles(
     if df[pred_col].isna().all():
         # Nothing to do—return empty result to make the problem obvious.
         return pd.DataFrame(
-            columns=[date_col, gid_col, horizon_col, "quantile", pred_col]
+            columns=[date_col, geo_col, horizon_col, "quantile", pred_col]
         )
 
     # Keep only rows with valid dates and predictions
@@ -64,7 +64,7 @@ def add_residual_quantiles(
 
         dfh = df[df[horizon_col] == h].copy()
         # Sort deterministically for causal pass
-        dfh = dfh.sort_values([date_col, gid_col], kind="mergesort")
+        dfh = dfh.sort_values([date_col, geo_col], kind="mergesort")
 
         hist_by_gid: dict[str, deque] = {}
         pooled_hist: deque = deque()
@@ -78,7 +78,7 @@ def add_residual_quantiles(
             df_apply = dfh.loc[day_mask]
 
             preds_today = df_apply[pred_col].to_numpy(dtype=float)
-            gids_today: List[str] = df_apply[gid_col].astype(str).tolist()
+            gids_today: List[str] = df_apply[geo_col].astype(str).tolist()
 
             # ---- APPLY STEP (use only past residuals; history buffers track that) ----
             for i, g in enumerate(gids_today):
@@ -105,7 +105,7 @@ def add_residual_quantiles(
                     out_records.append(
                         {
                             date_col: d,
-                            gid_col: g,
+                            geo_col: g,
                             horizon_col: h,
                             "quantile": float(q),
                             pred_col: np.expm1(float(v)).clip(min=0.0),

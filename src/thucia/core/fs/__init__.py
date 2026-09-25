@@ -132,7 +132,22 @@ def write_db(
     return
 
 
-def read_nc(filename: str | Path) -> pd.DataFrame:
+def _alias_gid_cols(
+    df: pd.DataFrame, geo_col: str = "GID_2", geo_parent: str = "GID_1"
+) -> pd.DataFrame:
+    """Rename legacy GADM geo columns to requested generic names in pandas space."""
+    rename = {}
+    for phys, logical in (("GID_2", geo_col), ("GID_1", geo_parent)):
+        if phys in df.columns and phys != logical and logical not in df.columns:
+            rename[phys] = logical
+    return df.rename(columns=rename) if rename else df
+
+
+def read_nc(
+    filename: str | Path,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+) -> pd.DataFrame:
     """
     Read a NetCDF file into a pandas DataFrame.
 
@@ -140,6 +155,10 @@ def read_nc(filename: str | Path) -> pd.DataFrame:
     ----------
     filename : str
         Name of the NetCDF file to read.
+    geo_col : str
+        Logical name to expose the geo-unit column as (aliases ``GID_2``).
+    geo_parent : str
+        Logical name to expose the geo-parent column as (aliases ``GID_1``).
 
     Returns
     -------
@@ -149,10 +168,15 @@ def read_nc(filename: str | Path) -> pd.DataFrame:
     ds = xr.open_dataset(str(filename))
     attrs = dict(ds.attrs)
     df = ds.to_dataframe().reset_index()
-    return _restore_period_column(df, attrs)
+    df = _restore_period_column(df, attrs)
+    return _alias_gid_cols(df, geo_col, geo_parent)
 
 
-def read_zarr(filename: str | Path) -> pd.DataFrame:
+def read_zarr(
+    filename: str | Path,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+) -> pd.DataFrame:
     """
     Read a Zarr file into a pandas DataFrame.
 
@@ -160,6 +184,10 @@ def read_zarr(filename: str | Path) -> pd.DataFrame:
     ----------
     filename : str
         Name of the Zarr file to read.
+    geo_col : str
+        Logical name to expose the geo-unit column as (aliases ``GID_2``).
+    geo_parent : str
+        Logical name to expose the geo-parent column as (aliases ``GID_1``).
 
     Returns
     -------
@@ -169,14 +197,32 @@ def read_zarr(filename: str | Path) -> pd.DataFrame:
     ds = xr.open_zarr(str(filename))
     attrs = dict(ds.attrs)
     df = ds.to_dataframe().reset_index()
-    return _restore_period_column(df, attrs)
+    df = _restore_period_column(df, attrs)
+    return _alias_gid_cols(df, geo_col, geo_parent)
 
 
 def read_db(
     filename: str | Path,
+    geo_col: str = "GID_2",
+    geo_parent: str = "GID_1",
+    migrate: bool = False,
 ) -> DataFrame:
     """
     Returns a reference to a Thucia DataFrame class
+
+    Parameters
+    ----------
+    filename : str | Path
+        Name of the database file to read (``.duckdb``, ``.nc`` or ``.zarr``;
+        the suffix is appended if missing).
+    geo_col : str
+        Logical name to expose the geo-unit column as. Legacy files storing the
+        column as ``GID_2`` are transparently aliased to this name on read.
+    geo_parent : str
+        Logical name to expose the geo-parent column as (aliases ``GID_1``).
+    migrate : bool
+        When True, legacy ``GID_2``/``GID_1`` columns are physically renamed to
+        ``geo_col``/``geo_parent`` in the DuckDB table.
     """
 
     # Add extension if missing
@@ -188,13 +234,18 @@ def read_db(
                 break
 
     if Path(filename).suffix == ".duckdb":
-        return DataFrame(str(filename))
+        return DataFrame(
+            str(filename),
+            geo_col=geo_col,
+            geo_parent=geo_parent,
+            migrate=migrate,
+        )
 
     if Path(filename).suffix == ".nc":
-        return DataFrame(df=read_nc(filename))
+        return DataFrame(df=read_nc(filename, geo_col=geo_col, geo_parent=geo_parent))
 
     if Path(filename).suffix == ".zarr":
-        return DataFrame(df=read_zarr(filename))
+        return DataFrame(df=read_zarr(filename, geo_col=geo_col, geo_parent=geo_parent))
 
     raise ValueError(
         "Could not open file, missing or unsupported file extension"

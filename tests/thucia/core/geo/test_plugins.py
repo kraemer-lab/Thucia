@@ -64,13 +64,23 @@ class MonthlyPlugin:
     granularity = "M"
     name = "fake monthly"
 
-    def merge(self, df, metrics=None, measures=None, use_cache=False):
-        # One value per (GID_2, month), placed on the last week of each month.
+    def merge(
+        self,
+        df,
+        metrics=None,
+        measures=None,
+        use_cache=False,
+        *,
+        geo_col="GID_2",
+        iso3=None,
+        polygons=None,
+    ):
+        # One value per (geo_col, month), placed on the last week of each month.
         out = df.copy()
         end = pd.PeriodIndex(out["Date"]).to_timestamp(how="end")
         month = end.to_period("M")
         last_of_month = (
-            out.groupby(["GID_2", month], observed=False)["Date"].transform("max")
+            out.groupby([geo_col, month], observed=False)["Date"].transform("max")
             == out["Date"]
         )
         out["tmax"] = np.nan
@@ -82,7 +92,17 @@ class FullPlugin(MonthlyPlugin):
     ref = "full"
     granularity = "M"
 
-    def merge(self, df, metrics=None, measures=None, use_cache=False):
+    def merge(
+        self,
+        df,
+        metrics=None,
+        measures=None,
+        use_cache=False,
+        *,
+        geo_col="GID_2",
+        iso3=None,
+        polygons=None,
+    ):
         out = df.copy()
         out["tmax"] = 25.0  # gap-free
         return out
@@ -158,3 +178,54 @@ def test_merge_geo_sources_gap_free_no_warning(fake_registry, monkeypatch):
         out = merge_geo_sources(_weekly_grid(), ["full.tmax"])
     assert not [w for w in record if issubclass(w.category, UserWarning)]
     assert (out["tmax"] == 25.0).all()
+
+
+def test_noaa_merge_accepts_geo_kwargs(monkeypatch):
+    # NOAA is date-only, but merge_geo_sources calls every plugin with
+    # geo_col / iso3 / polygons / use_cache — its merge must accept (and
+    # ignore) them.
+    import thucia.core.geo.sources.noaa as noaa_mod
+
+    faked = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2022-01-31", "2022-02-28"]),
+            "AnomONI": [0.1, -0.2],
+            "TotalONI": [0.3, -0.4],
+        }
+    )
+    monkeypatch.setattr(noaa_mod.NOAA, "_load_oni", lambda self: faked)
+    src = noaa_mod.NOAA()
+    df = pd.DataFrame(
+        {
+            "GID_2": ["A", "B"],
+            "Date": pd.period_range("2022-01", periods=2, freq="M"),
+        }
+    )
+    out = src.merge(
+        df,
+        use_cache=True,
+        geo_col="region3",
+        iso3="PER",
+        polygons="ignored",
+    )
+    assert {"AnomONI", "TotalONI"} <= set(out.columns)
+    assert len(out) == 2
+
+
+def test_merge_geo_sources_non_gadm_geo_col(fake_registry, monkeypatch):
+    import thucia.core.geo as geo
+
+    monkeypatch.setattr(geo, "source_registry", fake_registry)
+    grid = pd.DataFrame(
+        {
+            "Date": pd.period_range("2020-01-04", periods=14, freq="W-SAT"),
+            "region": ["north", "south"] * 7,
+        }
+    )
+    # The source is M-granular on a W-SAT grid: interpolated onto every week.
+    with pytest.warns(UserWarning, match="interpolated"):
+        out = merge_geo_sources(grid, ["fake.tmax"], geo_col="region")
+    assert set(out.columns) == {"Date", "region", "tmax"}
+    assert out["tmax"].notna().all()
+    assert "GID_2" not in out.columns
+    assert "GID_1" not in out.columns

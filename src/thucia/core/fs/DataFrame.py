@@ -75,6 +75,12 @@ class DataFrame:
     """
     Lightweight wrapper around a DuckDB table.
     Access columns lazily as pandas Series/DataFrames.
+
+    Geo columns are generic: the wrapper can be asked for ``geo_col`` /
+    ``geo_parent`` names that differ from the physical GADM names stored in a
+    legacy file (``GID_2``/``GID_1``). Reads then return the logical names via
+    a physical->logical column map, or persist the rename in the table when
+    ``migrate=True``.
     """
 
     def __init__(
@@ -84,6 +90,9 @@ class DataFrame:
         new_file: bool = False,
         table: str | None = None,
         df: pd.DataFrame | None = None,
+        geo_col: str = "GID_2",
+        geo_parent: str = "GID_1",
+        migrate: bool = False,
     ):
         # db_path is the old name for db_file; support both for now
         if db_file and not db_path:
@@ -108,6 +117,16 @@ class DataFrame:
         self.table = table
         self.dbconnect = DBConnect(self.db_path)
 
+        # Physical -> logical column aliases for geo columns read from legacy
+        # GADM-named files.
+        self._column_map: dict[str, str] = {}
+        if (
+            df is None
+            and not new_file
+            and (db_path == ":memory:" or Path(db_path).exists())
+        ):
+            self._setup_alias(geo_col, geo_parent, migrate)
+
         # Initialise with pandas dataframe
         if df is not None:
             self.write_df(df)
@@ -121,8 +140,45 @@ class DataFrame:
         except duckdb.CatalogException:
             return 0
 
+    def _physical_columns(self) -> list[str]:
+        with self.dbconnect as con:
+            return [row[0] for row in con.execute(f"DESCRIBE {self.table}").fetchall()]
+
+    def _setup_alias(self, geo_col: str, geo_parent: str, migrate: bool) -> None:
+        """Alias legacy GADM geo columns to the requested generic names.
+
+        Reads physical columns via DESCRIBE. When ``migrate`` is set the rename
+        is persisted in the table (single ``ALTER TABLE`` per column); otherwise
+        reads are transparently re-mapped through ``_column_map`` so user code
+        sees the logical ``geo_col``/``geo_parent`` names.
+        """
+        try:
+            physical = self._physical_columns()
+        except Exception:
+            return
+        legacy = {"GID_2": geo_col, "GID_1": geo_parent}
+        for phys, logical in legacy.items():
+            if phys not in physical or phys == logical or logical in physical:
+                continue
+            if migrate:
+                with self.dbconnect(read_only=False) as con:
+                    con.execute(
+                        f'ALTER TABLE {self.table} RENAME COLUMN "{phys}" TO "{logical}"'
+                    )
+            else:
+                self._column_map[phys] = logical
+
+    def _logical_to_physical(self, key: str) -> str:
+        """Translate a logical (aliased) column name to its physical name."""
+        for phys, logical in self._column_map.items():
+            if logical == key:
+                return phys
+        return key
+
     def query_df(self, query: str) -> pd.DataFrame:
-        """Run a query and return a pandas DataFrame, restoring Period dtypes"""
+        """Run a query and return a pandas DataFrame, restoring Period dtypes
+        and applying any geo-column aliases.
+        """
         with self.dbconnect as con:
             df = con.execute(query).fetch_df()
             # try to read column metadata for this table and restore Period columns
@@ -142,17 +198,22 @@ class DataFrame:
                     df[col_name] = pd.to_datetime(df[col_name])
                     df[col_name] = df[col_name].dt.to_period(freq)
 
+        if self._column_map:
+            df = df.rename(columns=self._column_map)
+
         return df
 
     def __getitem__(self, key: Any) -> pd.DataFrame | pd.Series:
         """Return a column or subset as pandas object."""
         # handle a single column name
         if isinstance(key, str):
-            query = f"SELECT {key} FROM {self.table}"
+            phys = self._logical_to_physical(key)
+            query = f"SELECT {phys} FROM {self.table}"
             return self.query_df(query)[key]
         # handle list/tuple of columns
         elif isinstance(key, (list, tuple)):
-            cols = ", ".join(key)
+            phys = [self._logical_to_physical(c) for c in key]
+            cols = ", ".join(phys)
             query = f"SELECT {cols} FROM {self.table}"
             return self.query_df(query)
         elif isinstance(key, slice):
@@ -220,8 +281,7 @@ class DataFrame:
 
     @property
     def columns(self) -> list[str]:
-        with self.dbconnect as con:
-            return [row[0] for row in con.execute(f"DESCRIBE {self.table}").fetchall()]
+        return [self._column_map.get(col, col) for col in self._physical_columns()]
 
     def __repr__(self):
         return f"<DataFrame table='{self.table}' db='{self.db_path}'>"
@@ -272,25 +332,55 @@ class DataFrame:
                 > 0
             )
 
-            # Create table
             if not table_exists:
                 # no data insert
                 con.execute(f"CREATE TABLE {self.table} AS SELECT * FROM df LIMIT 0")
 
-                # Ensure GID_2 is stored as ENUM with its full category list
-                for gid_col in ["GID_1", "GID_2"]:
-                    if gid_col not in df.columns:
-                        continue
-                    cats = df[gid_col].cat.categories.tolist()
-                    cats_escaped = [c.replace("'", "''") for c in cats]
-                    enum_list = ",".join(f"'{c}'" for c in cats_escaped)
-                    con.execute(
-                        f"ALTER TABLE {self.table} ALTER {gid_col} SET DATA TYPE ENUM({enum_list})"
-                    )
+            # Ensure GID_2 is stored as ENUM. geo codes are categoricals whose
+            # dictionary may grow across append pieces, so the ENUM must be
+            # (re)built as the union of the codes already stored and the ones in
+            # this frame — else DuckDB can't cast a label outside the ENUM.
+            for gid_col in ["GID_1", "GID_2"]:
+                if gid_col not in df.columns:
+                    continue
+                cats = list(df[gid_col].cat.categories)
+                if table_exists and cats:
+                    existing = [
+                        row[0]
+                        for row in con.execute(
+                            f"SELECT DISTINCT {gid_col} FROM {self.table}"
+                        ).fetchall()
+                        if row[0] not in cats
+                    ]
+                    cats = existing + cats
+                if not cats:
+                    continue
+                cats_escaped = [str(c).replace("'", "''") for c in cats]
+                enum_list = ",".join(f"'{c}'" for c in cats_escaped)
+                con.execute(
+                    f"ALTER TABLE {self.table} ALTER {gid_col} SET DATA TYPE ENUM({enum_list})"
+                )
 
-            # Insert data
-            con.register("df", df)
-            cols = ", ".join(df.columns)  # ensure we specify column orders
+            # Insert data. The pandas categoricals above map to distinct codes on
+            # every append piece, so registering a categorical for the INSERT
+            # makes DuckDB cast the raw code vectors instead of the labels.
+            # Decode the geo categoricals back to their strings for the INSERT;
+            # the ENUM column (now extended to cover every stored label) casts
+            # them back at runtime.
+            insert_df = df
+            cat_gids = [
+                col
+                for col in ("GID_1", "GID_2")
+                if col in df.columns and isinstance(df[col].dtype, pd.CategoricalDtype)
+            ]
+            if cat_gids:
+                insert_df = df.copy()
+                for col in cat_gids:
+                    insert_df[col] = insert_df[col].astype(
+                        insert_df[col].dtype.categories.dtype
+                    )
+            con.register("df", insert_df)
+            cols = ", ".join(insert_df.columns)  # ensure we specify column orders
             con.execute(f"INSERT INTO {self.table} ({cols}) SELECT * FROM df ")
             con.unregister("df")
 

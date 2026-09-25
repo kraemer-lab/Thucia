@@ -173,18 +173,30 @@ class WorldClim(SourceBase):
                 f"Raster file for {metric} in {year}-{month:02d} not found."
             )
 
-    def _get_cache_records(self, metric, dates, GID_2s):
-        return self.cache.get_records(
+    def _get_cache_records(self, metric, dates, geo_codes, geo_col: str):
+        if isinstance(dates.dtype, pd.PeriodDtype):
+            dates = dates.dt.to_timestamp(how="end")
+        df = self.cache.get_records(
             {
                 "metric": [metric] * len(dates),
                 "Date": pd.to_datetime(dates).dt.strftime("%Y-%m-%d").tolist(),
-                "GID_2": GID_2s,
+                "GID_2": geo_codes,
             }
         )
+        if geo_col != "GID_2":
+            df = df.rename(columns={"GID_2": geo_col})
+        return df
 
-    def _add_cache_records(self, metric, records) -> None:
+    def _add_cache_records(self, metric, records, geo_col: str) -> None:
         records["metric"] = metric
         records["Date"] = records["Date"].dt.strftime("%Y-%m-%d")  # to string
+        if geo_col != "GID_2":
+            records = records.rename(columns={geo_col: "GID_2"})
+        # Non-GADM polygon maps don't carry the GADM attribute columns; the cache
+        # schema keeps them, so pad absent columns with NULL before inserting.
+        for col in self.cache_columns:
+            if col not in records.columns:
+                records[col] = None
         self.cache.add_records(records)
         records.drop(columns=["metric"], inplace=True)
 
@@ -194,6 +206,10 @@ class WorldClim(SourceBase):
         metrics: list[str] | None = None,
         measures: list[str] | None = None,
         use_cache: bool = False,
+        *,
+        geo_col: str = "GID_2",
+        iso3: str | None = None,
+        polygons=None,
     ) -> pd.DataFrame:
         logging.info("Merging climate data with case data...")
 
@@ -205,8 +221,8 @@ class WorldClim(SourceBase):
         for metric in metrics:
             logging.info(f"Merging climate data for metric: {metric}")
 
-            # Get unique GID_2 and Date combinations
-            unique_gid2_dates = df[["GID_2", "Date"]].drop_duplicates()
+            # Get unique geo-code and Date combinations
+            unique_gid2_dates = df[[geo_col, "Date"]].drop_duplicates()
 
             # Add cache hits and return cache misses for processing
             stats = []
@@ -216,58 +232,83 @@ class WorldClim(SourceBase):
                     f"{len(unique_gid2_dates)} records)."
                 )
                 stats = self._get_cache_records(
-                    metric, unique_gid2_dates["Date"], unique_gid2_dates["GID_2"]
+                    metric,
+                    unique_gid2_dates["Date"],
+                    unique_gid2_dates[geo_col],
+                    geo_col,
                 )
                 stats["Date"] = pd.to_datetime(stats["Date"])
                 logging.info(
                     f"Found {len(stats)} records in cache for metric '{metric}'."
                 )
+                if isinstance(unique_gid2_dates["Date"].dtype, pd.PeriodDtype):
+                    unique_gid2_dates = unique_gid2_dates.assign(
+                        Date=unique_gid2_dates["Date"]
+                        .dt.to_timestamp(how="end")
+                        .dt.normalize()
+                    )
                 unique_gid2_dates = unique_gid2_dates[
-                    ~unique_gid2_dates.set_index(["GID_2", "Date"]).index.isin(
-                        stats.set_index(["GID_2", "Date"]).index
+                    ~unique_gid2_dates.set_index([geo_col, "Date"]).index.isin(
+                        stats.set_index([geo_col, "Date"]).index
                     )
                 ]
                 logging.info(f"Remaining records to process: {len(unique_gid2_dates)}.")
                 stats = [stats]
 
-            # Read and merge mean climate data per region for each Date
-            n_unique_gid2_dates = unique_gid2_dates["Date"].nunique()
-            for ix, date in enumerate(unique_gid2_dates["Date"].unique()):
-                tic = pd.Timestamp.now()
-                date_df = unique_gid2_dates[unique_gid2_dates["Date"] == date]
-                gid_2s = date_df["GID_2"].tolist()
+            # The raster is monthly, so the remaining dates are grouped by month:
+            # zonal stats are computed once per raster and reused for every date
+            # it covers (a weekly grid would otherwise re-extract ~4x/month).
+            # The month's union rows are cached for every date in the month,
+            # priming it so later runs skip whole months.
+            dates = unique_gid2_dates["Date"].unique()
+            by_month: dict[tuple[int, int], list] = {}
+            for date in dates:
+                by_month.setdefault((date.year, date.month), []).append(date)
+
+            for (year, month), month_dates in by_month.items():
+                union_codes = sorted(
+                    {
+                        c
+                        for d in month_dates
+                        for c in unique_gid2_dates.loc[
+                            unique_gid2_dates["Date"] == d, geo_col
+                        ]
+                    }
+                )
                 logging.info(
-                    f"Processing metric '{metric}' for {date.strftime('%Y-%m-%d')}"
-                    f" with {len(gid_2s)} GID_2 regions."
+                    f"Processing metric '{metric}' for {year}-{month:02d}"
+                    f" with {len(union_codes)} {geo_col} regions."
                 )
 
-                # Read the corresponding raster file for the date
+                # Read the raster file for the month
                 try:
-                    tif_file, source = self.get_filename(metric, date.year, date.month)
+                    tif_file, source = self.get_filename(metric, year, month)
                 except FileNotFoundError as e:
-                    logging.warning(f"Raster file for {date} not found: {e}")
+                    logging.warning(
+                        f"Raster file for {year}-{month:02d} not found: {e}"
+                    )
                     continue
 
-                # Calculate zonal statistics for the GID_2 regions
-                stat = raster_stats_gid2(tif_file, gid_2s)
-                stat = stat[stat["mean"].notna()]
-                stat["Date"] = date
-                stat["source"] = source
-
-                self._add_cache_records(metric, stat)
-
-                stat["Date"] = pd.to_datetime(stat["Date"])  # ensure datetime
-                stats.append(stat)
-
-                # Estimate time remaining
-                toc = pd.Timestamp.now()
-                estimated_time_remaining = (toc - tic) * (n_unique_gid2_dates - ix - 1)
-                logging.info(
-                    f"Took {toc - tic}, "
-                    f"estimated time remaining: {estimated_time_remaining}."
+                # Calculate zonal statistics for the region union
+                stat = raster_stats_gid2(
+                    tif_file,
+                    union_codes,
+                    geo_col=geo_col,
+                    polygons=polygons,
+                    iso3=iso3,
                 )
+                stat = stat[stat["mean"].notna()]
 
-            stats = pd.concat(stats, ignore_index=True)
+                for date in month_dates:
+                    s = stat.copy()
+                    s["Date"] = pd.to_datetime(date)  # normalize (Period-safe)
+                    s["source"] = source
+                    if len(s):
+                        self._add_cache_records(metric, s, geo_col)
+                    stats.append(s)
+
+            frames = [s for s in stats if len(s)]
+            stats = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
             col_map = {f"{measure}": f"{metric}_{measure}" for measure in measures}
             stats.rename(columns=col_map, inplace=True)
 
@@ -276,8 +317,8 @@ class WorldClim(SourceBase):
 
             # Merge with the original DataFrame
             df = df.merge(
-                stats[["GID_2", "Date", *col_map.values()]],
-                on=["GID_2", "Date"],
+                stats[[geo_col, "Date", *col_map.values()]],
+                on=[geo_col, "Date"],
                 how="left",
             )
 

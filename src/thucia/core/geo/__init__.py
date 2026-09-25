@@ -1,6 +1,9 @@
 import logging
+import re
 import unicodedata
 import warnings
+from functools import lru_cache
+from os import PathLike
 from pathlib import Path
 
 import geopandas as gpd
@@ -14,31 +17,6 @@ from thucia.core.fs import DataFrame
 
 from .plugin_base import source_registry
 from .plugin_loader import load_plugins
-
-
-def lookup_gid1(iso3, admin1_names: list[str] | None = None):
-    """
-    Lookup GID_1 codes for the given administrative level 1 names in a DataFrame.
-
-    Parameters:
-    admin1_names (list[str]): List of administrative level 1 names to lookup.
-    iso3 (str): ISO3 country code.
-
-    Returns:
-    list[str]: List of GID_1 codes corresponding to the provided names.
-    """
-    if admin1_names:
-        logging.info(
-            f"Looking up GID_1 codes for Admin-1 names: {admin1_names} in {iso3}..."
-        )
-    else:
-        logging.info("Admin-1 filter not specified, retrieving all GID_1 codes...")
-
-    gdf = get_admin2_list(iso3)
-    if admin1_names:
-        gdf = gdf[gdf["NAME_1"].isin(admin1_names)]
-    admin1_regions = gdf["GID_1"].unique().tolist()
-    return admin1_regions
 
 
 def remove_accents(text):
@@ -292,6 +270,46 @@ def _ensure_plugins_loaded() -> None:
         load_plugins()
 
 
+def _load_regions_gdf(
+    regions,
+    region_col: str | None = None,
+    geo_col: str = "GID_2",
+):
+    """Load a region map (path or in-memory frame) keyed onto ``geo_col``.
+
+    Returns the (Geo)DataFrame — attribute table plus geometry — with its key
+    column renamed to ``geo_col``, or `None` when ``regions`` is `None`. A path
+    is read once and cached; in-memory frames are used as-is (and must not be
+    mutated downstream).
+    """
+    if regions is None:
+        return None
+    if isinstance(regions, (str, PathLike)):
+        return _load_regions_path(str(Path(regions).expanduser()), region_col, geo_col)
+    gdf = regions
+    if region_col and region_col != geo_col:
+        gdf = gdf.rename(columns={region_col: geo_col})
+    if geo_col not in gdf.columns:
+        raise ValueError(
+            f"Region map has no '{geo_col}' column: pass region_col= naming the "
+            "column holding the geo codes."
+        )
+    return gdf
+
+
+@lru_cache(maxsize=None)
+def _load_regions_path(path: str, region_col: str | None, geo_col: str) -> pd.DataFrame:
+    gdf = gpd.read_file(path)
+    if region_col and region_col != geo_col:
+        gdf = gdf.rename(columns={region_col: geo_col})
+    if geo_col not in gdf.columns:
+        raise ValueError(
+            f"Region map at {path} has no '{geo_col}' column: pass region_col= "
+            "naming the column holding the geo codes."
+        )
+    return gdf
+
+
 def _freq_day_scale(freq: str) -> int:
     """Rough days-per-period for a pandas frequency (for granularity comparison)."""
     f = freq.upper()
@@ -348,20 +366,39 @@ def interpolate_covariates(
 
 
 def merge_geo_sources(
-    df: pd.DataFrame, sources: list[str], method: str = "linear"
+    df: pd.DataFrame,
+    sources: list[str],
+    method: str = "linear",
+    *,
+    geo_col: str = "GID_2",
+    iso3: str | None = None,
+    regions=None,
+    region_col: str | None = None,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """
     Add source information to the DataFrame.
 
     Parameters:
-    df (pd.DataFrame): The DataFrame to which source information will be added.
-    sources (list[str]): List of sources to be added. Format: ['origin.field']
-                         where field may be '*', e.g. ['worldclim.*', 'edo.spi6'].
+    df (pd.DataFrame): DataFrame containing 'GID_2' (or `geo_col`) and 'Date'
+                       columns.
+    sources (list[str]): List of covariate source specifications.
     method (str): Interpolation method used when a source's granularity is
                   coarser than the case-data frequency (e.g. monthly sources on
                   a weekly grid). Default "linear"; also "ffill"/"bfill".
+    geo_col (str): The geo-code column. GADM-shaped codes need no `regions`;
+                  any other scheme should supply `regions` (a map with geometry
+                  keyed by `region_col`) so raster sources can extract values.
+    iso3 (str | None): Explicit country code for per-country sources (e.g.
+                  WorldPop) and the GADM GeoPackage fallback.
+    regions: A shapefile/GeoPackage path or in-memory (Geo)DataFrame with a
+                  geometry column, keyed by `region_col` (defaults to `geo_col`).
+    region_col (str | None): The `regions` column holding the geo codes.
+    use_cache (bool): Read sources' cached stats where available instead of
+                  always re-extracting (sources still extract on cache misses).
     """
     _ensure_plugins_loaded()
+    polygons = _load_regions_gdf(regions, region_col, geo_col)
 
     # Collate source information
     d_sources: dict[str, list[str]] = {}
@@ -377,7 +414,14 @@ def merge_geo_sources(
     for origin, fields in d_sources.items():
         plugin = source_registry.get(origin)()
         orig_cols = set(df.columns)
-        merged = plugin.merge(df, metrics=fields)
+        merged = plugin.merge(
+            df,
+            metrics=fields,
+            geo_col=geo_col,
+            iso3=iso3,
+            polygons=polygons,
+            use_cache=use_cache,
+        )
         new_cols = [c for c in merged.columns if c not in orig_cols]
         if not new_cols or not isinstance(merged["Date"].dtype, pd.PeriodDtype):
             df = merged
@@ -386,7 +430,9 @@ def merge_geo_sources(
         case_freq = period_freq_str(merged["Date"].dtype)
         granularity = getattr(plugin, "granularity", "M")
         if _freq_day_scale(case_freq) < _freq_day_scale(granularity):
-            merged, n_filled = interpolate_covariates(merged, new_cols, method=method)
+            merged, n_filled = interpolate_covariates(
+                merged, new_cols, gid_col=geo_col, method=method
+            )
             if n_filled:
                 warnings.warn(
                     f"Source '{origin}' is {granularity}-granular; interpolated "
@@ -451,57 +497,191 @@ def convert_to_incidence_rate(
     return df_with_pop
 
 
-def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
+def _region_roster(
+    regions: pd.DataFrame,
+    *,
+    geo_col: str,
+    geo_parent: str | None,
+    region_col: str | None,
+    parent_col: str | None,
+    adm1_col: str,
+    adm2_col: str,
+    name1_col: str | None,
+    name2_col: str | None,
+) -> pd.DataFrame:
+    """Normalise a region roster onto the caller's geo column names.
+
+    ``regions`` may key its rows under any names (e.g. a GADM frame using
+    ``GID_2``/``GID_1``/``NAME_1``/``NAME_2``); they are aliased onto
+    ``geo_col``/``geo_parent``/``adm1_col``/``adm2_col`` so the padding logic is
+    column-name agnostic.
     """
-    Ensure all Admin-2 regions are included in the DataFrame, even those with zero
-    cases.
+    rename = {region_col or geo_col: geo_col}
+    if geo_parent is not None:
+        rename.setdefault(parent_col or geo_parent, geo_parent)
+    if name1_col is not None:
+        rename.setdefault(name1_col, adm1_col)
+    if name2_col is not None:
+        rename.setdefault(name2_col, adm2_col)
+    roster = regions.rename(columns=rename)
+    wanted = [geo_col]
+    if geo_parent is not None:
+        wanted.append(geo_parent)
+    for col in wanted:
+        if col not in roster.columns:
+            raise ValueError(
+                f"Region list has no '{col}' column (roster keyed by "
+                f"'{region_col or geo_col}'); cannot ensure all regions."
+            )
+    keep = wanted + [c for c in (adm1_col, adm2_col) if c in roster.columns]
+    return roster[keep].drop_duplicates(geo_col)
+
+
+def ensure_all_regions(
+    df: DataFrame | pd.DataFrame,
+    *,
+    geo_col: str = "GID_2",
+    geo_parent: str | None = "GID_1",
+    iso3: str | None = None,
+    regions: pd.DataFrame | None = None,
+    region_col: str | None = None,
+    parent_col: str | None = None,
+    adm1_col: str = "ADM1",
+    adm2_col: str = "ADM2",
+    name1_col: str | None = "NAME_1",
+    name2_col: str | None = "NAME_2",
+) -> DataFrame:
+    """
+    Ensure every region in ``geo_col`` appears in the DataFrame, even those with
+    zero cases in every period.
+
+    The authoritative region list is resolved as:
+
+    - ``regions``: a roster DataFrame such as a shapefile attribute table,
+      keyed by ``region_col``/``parent_col`` (and the name columns when you want
+      ADM1/ADM2 names carried into the padded rows);
+    - the GADM admin-2 list for ``iso3`` (or the geo-code prefix) when
+      ``regions`` is omitted and the geo codes are GADM-shaped — this applies to
+      categorical codes too, since an aggregated frame's categories only ever
+      reflect observed regions;
+    - if ``df[geo_col]`` is a categorical with non-GADM codes, its
+      ``.cat.categories`` form an implicit region list; or
+    - otherwise a ``ValueError`` is raised — callers that want a subset simply do
+      not run this function.
     """
 
     if isinstance(df, DataFrame):
-        df = df.df  # convert to pandas DataFrame (quick fix, consider function rewrite)
+        df = df.df
 
-    if "GID_2" not in df.columns:
-        raise ValueError("DataFrame must contain 'GID_2' column.")
+    if geo_col not in df.columns:
+        raise ValueError(f"DataFrame must contain '{geo_col}' column.")
 
-    # Get unique Admin-2 regions
-    gid0 = df["GID_2"].iloc[0][:3]  # Assuming GID_2 starts with GID-0
-    unique_admin2 = df["GID_2"].unique()
-    all_admin2 = get_admin2_list(gid0)
+    observed_code = str(df[geo_col].dropna().iloc[0])
+    gadm_shaped = bool(re.match(r"^[A-Za-z0-9]{1,3}\.\d+(\.\d+)?_\d+$", observed_code))
 
-    # Find missing Admin-2 regions
-    missing_admin2 = set(all_admin2["GID_2"].unique()) - set(unique_admin2)
-    date_list = list(df["Date"].drop_duplicates().sort_values())
-    n_dates = len(date_list)
+    if regions is not None:
+        roster = _region_roster(
+            regions,
+            geo_col=geo_col,
+            geo_parent=geo_parent,
+            region_col=region_col,
+            parent_col=parent_col,
+            adm1_col=adm1_col,
+            adm2_col=adm2_col,
+            name1_col=name1_col,
+            name2_col=name2_col,
+        )
+    elif gadm_shaped:
+        # GADM-shaped codes take the GADM admin-2 list even when the column is
+        # categorical: aggregation re-derives categories from observed data, so
+        # never-seen regions are invisible to `.cat.categories`.
+        if iso3 is None:
+            iso3 = observed_code[:3]
+        roster = _region_roster(
+            get_admin2_list(iso3),
+            geo_col=geo_col,
+            geo_parent=geo_parent,
+            region_col="GID_2",
+            parent_col="GID_1",
+            adm1_col=adm1_col,
+            adm2_col=adm2_col,
+            name1_col="NAME_1",
+            name2_col="NAME_2",
+        )
+    elif isinstance(df[geo_col].dtype, pd.CategoricalDtype):
+        # Non-GADM categorical: the categories are the implicit region list.
+        roster = pd.DataFrame({geo_col: list(df[geo_col].cat.categories)})
+        for col in (geo_parent, adm1_col, adm2_col):
+            if col is None or col not in df.columns:
+                continue
+            roster = roster.merge(
+                df.drop_duplicates(geo_col)[[geo_col, col]].dropna(subset=[geo_col]),
+                on=geo_col,
+                how="left",
+            )
+        if geo_parent is not None and geo_parent not in roster.columns:
+            roster[geo_parent] = None
+    else:
+        # No roster, not GADM-shaped, not categorical: no region list can be
+        # resolved. Callers that want a subset simply do not run this function.
+        raise ValueError(
+            f"Cannot resolve the region list: '{geo_col}' has no regions= roster "
+            f"and code {observed_code!r} does not look GADM-shaped, nor is the "
+            "column categorical. Pass regions=... (e.g. a shapefile attribute "
+            "table) or make the geo column a categorical to pad to its "
+            "categories."
+        )
 
-    # Create a DataFrame for missing regions with zero cases
-    missing_df = []
-    for adm2 in missing_admin2:
-        df_entry = pd.DataFrame(
-            {
-                "Date": date_list,
-                "GID_1": [all_admin2["GID_1"][all_admin2["GID_2"] == adm2].values[0]]
-                * n_dates,
-                "GID_2": [adm2] * n_dates,
+    # Observed set comes from the *present* values: on a categorical, `.unique()`
+    # drops unused categories, so the roster codes stay authoritative for the
+    # no-miss guarantee.
+    roster_codes = roster[geo_col].dropna().astype("object").unique()
+    observed = set(df[geo_col].dropna().astype("object").unique())
+    missing = [c for c in roster_codes if c not in observed]
+
+    missing_frames = []
+    if missing:
+        dates = list(df["Date"].drop_duplicates().sort_values())
+        n_dates = len(dates)
+        roster_by_zone = roster.set_index(geo_col)
+
+        def _value(zone, col):
+            val = roster_by_zone.loc[zone, col]
+            return val.iloc[0] if isinstance(val, pd.Series) else val
+
+        for zone in missing:
+            row = {
+                "Date": dates,
+                geo_col: [zone] * n_dates,
                 "Cases": [0] * n_dates,
             }
-        )
-        if "ADM1" in df.columns:
-            df_entry["ADM1"] = all_admin2["NAME_1"][all_admin2["GID_2"] == adm2].values[
-                0
-            ]
-        if "ADM2" in df.columns:
-            df_entry["ADM2"] = all_admin2["NAME_2"][all_admin2["GID_2"] == adm2].values[
-                0
-            ]
-        missing_df.append(df_entry)
+            if geo_parent is not None:
+                parent = _value(zone, geo_parent)
+                # Omit the column when the parent is unknown: leaving it out makes
+                # the concat fill NaN for those rows instead of passing an
+                # all-NA column through concat (which pandas deprecates).
+                if not pd.isna(parent):
+                    row[geo_parent] = [parent] * n_dates
+            for col in (adm1_col, adm2_col):
+                if col in df.columns and col in roster_by_zone.columns:
+                    val = _value(zone, col)
+                    if not pd.isna(val):
+                        row[col] = [val] * n_dates
+            missing_frames.append(pd.DataFrame(row))
 
-    # Concatenate the original DataFrame with the missing regions
     result = (
-        pd.concat([df, *missing_df], ignore_index=True)
-        .sort_values(["Date", "GID_2"])
-        .reset_index(drop=True)
+        pd.concat([df, *missing_frames], ignore_index=True)
+        if missing_frames
+        else df.copy()
     )
-    result.sort_values(by=["Date", "GID_2"], inplace=True)
+    if isinstance(df[geo_col].dtype, pd.CategoricalDtype):
+        categories = list(df[geo_col].cat.categories) + [
+            c for c in roster_codes if c not in set(df[geo_col].cat.categories)
+        ]
+        result[geo_col] = pd.Categorical(
+            result[geo_col].astype("object"), categories=categories
+        )
+    result = result.sort_values(["Date", geo_col]).reset_index(drop=True)
 
     # Convert to Thucia DataFrame and clean up
     out = DataFrame(df=result)
@@ -509,24 +689,49 @@ def pad_admin2(df: DataFrame | pd.DataFrame) -> DataFrame:
     return out
 
 
-def merge_sources(df, covars: list[str], method: str = "linear") -> pd.DataFrame:
+def merge_sources(
+    df,
+    covars: list[str],
+    method: str = "linear",
+    *,
+    geo_col: str = "GID_2",
+    iso3: str | None = None,
+    regions=None,
+    region_col: str | None = None,
+    use_cache: bool = False,
+) -> pd.DataFrame:
     """
     Merge geographic and climatological covariates into the main DataFrame.
 
     `method` is the interpolation method used when a source's granularity is
     coarser than the case-data frequency (see merge_geo_sources).
+
+    `geo_col`, `iso3`, `regions`, and `region_col` are forwarded to each source
+    (see merge_geo_sources): GADM-shaped codes work out of the box; any other
+    geo scheme should supply a `regions` map so raster sources can extract
+    values. `use_cache` forwards each source's cached-stats flag (see
+    merge_geo_sources).
     """
     categorical_covars = ["GID_1", "GID_2", "ADM1", "ADM2", "Status"]
     for covar in covars:
-        df_covar = merge_geo_sources(df, [covar], method=method)
+        df_covar = merge_geo_sources(
+            df,
+            [covar],
+            method=method,
+            geo_col=geo_col,
+            iso3=iso3,
+            regions=regions,
+            region_col=region_col,
+            use_cache=use_cache,
+        )
         for cat in categorical_covars:
             if cat in df_covar.columns:
                 df_covar[cat] = df_covar[cat].astype("category")
         merge_vars = list(
-            set(["GID_2", "Date"])
+            set([geo_col, "Date"])
             | (set(df_covar.columns.tolist()) - set(df.columns.tolist()))
         )
         logging.info("Performing merge with variables: " + ", ".join(merge_vars))
-        df = df.merge(df_covar[merge_vars], on=["GID_2", "Date"], how="left")
+        df = df.merge(df_covar[merge_vars], on=[geo_col, "Date"], how="left")
         logging.info(f"After merging {covar}, there are {len(df)} records.")
     return df

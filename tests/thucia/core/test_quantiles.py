@@ -36,7 +36,7 @@ def test_quantile_sum_fast_default_grid_matches_canonical():
     df = pd.DataFrame(
         {
             "Date": ["2020-01"] * (len(canonical) * 2),
-            "GID_1": (["G0"] * len(canonical)) + (["G1"] * len(canonical)),
+            "GID_2": (["G0"] * len(canonical)) + (["G1"] * len(canonical)),
             "horizon": [1] * (len(canonical) * 2),
             "quantile": canonical + canonical,
             "prediction": list(preds) + list(preds + 1),

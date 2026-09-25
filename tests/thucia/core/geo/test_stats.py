@@ -1,8 +1,13 @@
 # Probing tests for raster zonal-statistics helpers (core/geo/stats.py).
 # GADM GeoPackage and raster access are mocked (no network, no real raster).
+import numpy as np
 import pandas as pd
 import pytest
+import rasterio
 import thucia.core.geo.stats as stats
+from geopandas import GeoDataFrame
+from rasterio.transform import from_origin
+from shapely.geometry import box
 
 
 @pytest.fixture
@@ -103,3 +108,119 @@ def test_raster_stats_gid2_missing_gpkg_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(stats, "cache_folder", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="not found"):
         stats.raster_stats_gid2("some.tif", ["X.1.1_2"])
+
+
+def test_raster_stats_gid2_explicit_polygons(monkeypatch):
+    # A caller-supplied polygon map (no GADM involvement): non-GADM codes, list
+    # of codes keyed by the map's own geo column, no iso3 required.
+    regions = pd.DataFrame(
+        {
+            "region": ["north", "south"],
+            "ADM1": ["ProvA", "ProvB"],
+            "geometry": [None, None],
+        }
+    )
+
+    def fake_zonal_stats(polys, tif, stats=None):
+        assert set(polys["region"]) == {"north", "south"}
+        assert tif == "some.tif"
+        assert stats == ["mean"]
+        return [{"mean": 1.0}, {"mean": 2.0}]
+
+    monkeypatch.setattr(stats, "zonal_stats", fake_zonal_stats)
+    monkeypatch.setattr(
+        stats.gpd, "read_file", lambda *a, **k: pytest.fail("no GADM read")
+    )
+
+    out = stats.raster_stats_gid2(
+        "some.tif",
+        ["north", "south"],
+        geo_col="region",
+        polygons=regions,
+    )
+
+    assert out["mean"].tolist() == [1.0, 2.0]
+    # The map's own attribute columns flow through; no GADM columns appear.
+    assert set(out.columns) == {"region", "ADM1", "mean"}
+    assert "geometry" not in out.columns
+
+
+def test_stats_region_only_intersection(monkeypatch):
+    # Explicit polygons are filtered down to the requested codes before zonal
+    # stats, so a map can cover more regions than the merge needs.
+    regions = pd.DataFrame(
+        {
+            "region": ["north", "south", "west"],
+            "geometry": [None] * 3,
+        }
+    )
+
+    def fake_zonal_stats(polys, tif, stats=None):
+        assert set(polys["region"]) == {"north"}
+        return [{"mean": 5.0}]
+
+    monkeypatch.setattr(stats, "zonal_stats", fake_zonal_stats)
+    out = stats.raster_stats_gid2(
+        "some.tif", ["north"], geo_col="region", polygons=regions
+    )
+    assert out["mean"].tolist() == [5.0]
+    assert out["region"].tolist() == ["north"]
+
+
+def _write_ones_raster(tmp_path, nodata=-9999.0, sz=6):
+    """A 6x6 unit-CRS raster: ones except the top-left cell set to nodata."""
+    path = tmp_path / "ones.tif"
+    array = np.ones((sz, sz), dtype="float32")
+    array[0, 0] = nodata
+    profile = {
+        "driver": "GTiff",
+        "height": sz,
+        "width": sz,
+        "count": 1,
+        "dtype": "float32",
+        "crs": "EPSG:4326",
+        "transform": from_origin(0.0, 6.0, 1.0, 1.0),
+        "nodata": nodata,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(array, 1)
+    return path
+
+
+def test_zonal_stats_rasterio(tmp_path):
+    # Unweighted reductions over finite, non-nodata pixels: a 2x2 all-ones
+    # block -> mean 1, sum 4, count 4.
+    tif = _write_ones_raster(tmp_path)
+    row_2 = box(1, 4, 3, 6)  # cols 1-2, rows 0-1 (lat 4-6)
+    row_3 = box(3, 4, 5, 6)  # cols 3-4, rows 0-1
+    polys = GeoDataFrame(
+        {"region": ["a", "b"], "geometry": [row_2, row_3]}, crs="EPSG:4326"
+    )
+    out = stats.zonal_stats(polys, tif, stats=["mean", "sum", "count"])
+    for stat in out:
+        assert stat["mean"] == pytest.approx(1.0)
+        assert stat["sum"] == pytest.approx(4.0)
+        assert stat["count"] == 4
+
+
+def test_zonal_stats_rasterio_excludes_nodata(tmp_path):
+    # The polygon includes the nodata cell: only the finite pixel is counted.
+    tif = _write_ones_raster(tmp_path)
+    covering_nodata = box(0, 5, 2, 6)  # cols 0-1, row 0; cell (0,0) is nodata
+    polys = GeoDataFrame(
+        {"region": ["a"], "geometry": [covering_nodata]}, crs="EPSG:4326"
+    )
+    out = stats.zonal_stats(polys, tif, stats=["mean", "sum", "count"])
+    assert out[0]["mean"] == pytest.approx(1.0)
+    assert out[0]["sum"] == pytest.approx(1.0)
+    assert out[0]["count"] == 1
+
+
+def test_zonal_stats_unsupported_stat_raises(tmp_path):
+    tif = _write_ones_raster(tmp_path)
+    assert tmp_path.exists()
+    polys = GeoDataFrame(
+        {"region": ["a"], "geometry": [box(1, 5, 2, 6)]}, crs="EPSG:4326"
+    )
+    with pytest.raises(ValueError, match="Unsupported zonal"):
+        stats.zonal_stats(polys, tif, stats=["nope"])

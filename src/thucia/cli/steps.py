@@ -31,7 +31,9 @@ def cases_per_month(
 
     # Aggregate cases per month
     tdf = cases.cases_per_month(tdf, cases_col=cases_col)
-    tdf = geo.pad_admin2(tdf)  # Ensure all Admin-2 regions included for covariate maps
+    tdf = geo.ensure_all_regions(
+        tdf
+    )  # Ensure all Admin-2 regions included for covariate maps
 
     # Write output
     write_db(tdf, path / output_file)

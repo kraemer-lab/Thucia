@@ -54,12 +54,29 @@ their metadata recorded in a `__column_metadata__` table, and restored to their
 (via Dataset attributes).
 
 **Categorical geo codes.** `GID_1`, `GID_2`, and `Status` are stored as DuckDB
-`ENUM`s created with the full category list. When appending rows, all enum
-categories must already be present from the first write.
+`ENUM`s. On every write/append the ENUM is (re)built as the union of the codes
+already stored and the ones in the incoming frame, so geo columns can grow
+across append pieces:
 
 ```python
-tdf.append(new_rows)   # all GID categories must exist from the first write
+tdf.append(new_rows)   # geo ENUM automatically extends to the new codes
 ```
+
+The geo categoricals are decoded back to strings for the `INSERT` — DuckDB
+casts those `VARCHAR`s into the ENUM column at runtime (registering the raw
+pandas categorical codes instead would collide with the table's ENUM).
+
+**Aliasing legacy `GID_1`/`GID_2`.** `read_db`/`read_nc`/`read_zarr` accept
+`geo_col`, `geo_parent`, and `migrate`. Files written under the old GADM column
+names are exposed under the logical names you ask for, without any rename:
+
+```python
+tdf = read_db("my_run/cases", geo_col="region", geo_parent="state")
+tdf.columns             # ['Date', 'state', 'region', 'Cases']
+```
+
+Pass `migrate=True` (DuckDB only) to physically rename the stored columns; for
+NetCDF/Zarr the aliasing is applied to the pandas frame on read.
 
 ## NetCDF / Zarr
 

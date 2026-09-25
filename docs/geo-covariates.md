@@ -13,6 +13,12 @@ from thucia.core.geo import merge_sources
 df = merge_sources(df, ["worldclim.*", "edo.spi6", "worldpop.pop_count"])
 ```
 
+Non-GADM geo schemes work too: raster sources extract values over the polygon
+map you supply as `PipelineConfig.regions` (a shapefile/GeoPackage with
+geometry, keyed by `region_col`), and `merge_sources`/`merge_covariates` thread
+`geo_col`/`iso3` through every plugin. GADM-shaped codes need no map — the
+cached GADM GeoPackage is used automatically.
+
 The {doc}`pipeline` applies the configured `source_specs` automatically in the
 `merge_covariates` stage.
 
@@ -43,6 +49,8 @@ The {doc}`pipeline` applies the configured `source_specs` automatically in the
   - WorldPop
   - `pop_count` (and population-estimate variants)
   - 1 km population rasters; `pop_count` feeds the incidence-rate column.
+    Per-country rasters need a country key: explicit `iso3`, the regions map's
+    `COUNTRY` column, or the GADM code prefix.
 ```
 
 ### Spec format
@@ -68,6 +76,15 @@ Downloads and derived statistics are cached under the platform cache directory
 - `cache_folder/climate/` — WorldClim and EDO SQLite caches.
 - `cache_folder/geo/<ISO3>/gadm41_<ISO3>.gpkg` — GADM admin-2 GeoPackages used
   for region alignment, padding, and map plotting.
+
+By default the pipeline re-extracts zonal statistics from the downloaded
+rasters on every run. Setting `PipelineConfig.use_cache=True` makes
+`merge_covariates` read each source's SQLite stats cache first, falling back to
+extraction only on cache misses (`"real-read"` vs. `"real-fresh"` behaviour in
+the Peru exploration script). WorldClim/EDO/WorldPop rasters are monthly or
+annual, so each source computes zonal stats once per raster and reuses them for
+every date the raster covers, and the month's full region union is cached for
+every date in that month — later runs skip whole months instead of re-extracting.
 
 ```{note}
 The first time you merge a covariate for a new country or period, Thucia

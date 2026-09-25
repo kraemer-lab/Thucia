@@ -31,12 +31,12 @@ flowchart LR
   - Consumes
   - Produces
 * - `cases_per_period(df, config, freq="M")`
-  - Raw per-case rows (`Date`, `GID_1`, `GID_2`, `Cases`).
+  - Raw per-case rows (`Date`, `GID_1`, `GID_2`, `Cases`); any `geo_col`/`geo_parent` naming works — the rows are padded to every region before aggregation.
   - A period-aggregated frame with admin-2 regions padded to a common grid and
     `future_periods` of future placeholder rows (`Cases=NaN`, `future=True`).
 * - `merge_covariates(df, config)`
   - The padded period frame.
-  - The same frame with covariate columns merged on `["GID_2", "Date"]` plus the
+  - The same frame with covariate columns merged on `[geo_col, "Date"]` plus the
     incidence-rate column `DIR`.
 * - `prepare_model_inputs(df, config)`
   - The merged frame.
@@ -98,9 +98,28 @@ commonly changed fields:
   - `"linear"`
   - How coarser-granularity covariates are interpolated onto the case grid
     (`"linear"`, `"ffill"`, or `"bfill"`).
-* - `model_admin_level`
-  - `2`
-  - Admin level of the forecast regions (admin-2 by default).
+* - `use_cache`
+  - `False`
+  - Read sources' cached covariate stats where present (sources still extract
+    on cache misses); `False` re-extracts zonal statistics every run.
+* - `regions` / `region_col`
+  - `None`
+  - Optional polygon map (shapefile/GeoPackage path, or in-memory GeoDataFrame)
+    keyed by `region_col` holding the `geo_col` codes. When supplied it drives
+    both region padding and raster covariate extraction, so non-GADM geo schemes
+    work end-to-end; GADM-shaped codes need no map.
+* - `geo_col` / `geo_parent`
+  - `"GID_2"` / `"GID_1"`
+  - Geo unit columns: `geo_col` is the forecast region, `geo_parent` its larger
+    grouping (used for filtering/subsetting). `geo_parent=None` omits the parent
+    column from padded rows. `cases_per_period` pads the frame to every region
+    via `ensure_all_regions`: an explicit `regions=` roster first, then the GADM
+    admin-2 list for GADM-shaped codes, then a categorical column's
+    `.cat.categories` as an implicit non-GADM region list.
+* - `train_col`
+  - `None`
+  - Column to fit per-region at (e.g. `GID_1` for an admin-1 fit); when `None`
+    the pipeline fits per `geo_col`.
 * - `case_col`
   - `"Log_Cases"`
   - Column used by the models.

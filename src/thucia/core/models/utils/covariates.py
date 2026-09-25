@@ -68,6 +68,7 @@ def build_features(df: pd.DataFrame, specs: Iterable[Dict[str, Any]]) -> pd.Data
 
 def prepare_covariates(
     df,
+    geo_col: str = "GID_2",
 ):
     df = df.copy()
     case_col = "Log_Cases"
@@ -83,13 +84,13 @@ def prepare_covariates(
         },
         {
             "name": "lag_1_log_cases",
-            "groupby": ["GID_2"],
+            "groupby": [geo_col],
             "column": "Log_Cases",
             "pipeline": [{"op": "shift", "periods": 1}],
         },
         {
             "name": "tmin_roll_2",
-            "groupby": ["GID_2"],
+            "groupby": [geo_col],
             "column": "tmin",
             "pipeline": [
                 {"op": "rolling", "window": 2},
@@ -97,13 +98,13 @@ def prepare_covariates(
         },
         {
             "name": "lag_1_tmin_roll_2",
-            "groupby": ["GID_2"],
+            "groupby": [geo_col],
             "column": "tmin_roll_2",
             "pipeline": [{"op": "shift", "periods": 1}],
         },
         {
             "name": "prec_roll_2",
-            "groupby": ["GID_2"],
+            "groupby": [geo_col],
             "column": "prec",
             "pipeline": [
                 {"op": "rolling", "window": 2},
@@ -111,7 +112,7 @@ def prepare_covariates(
         },
         {
             "name": "lag_1_prec_roll_2",
-            "groupby": ["GID_2"],
+            "groupby": [geo_col],
             "column": "prec_roll_2",
             "pipeline": [{"op": "shift", "periods": 1}],
         },

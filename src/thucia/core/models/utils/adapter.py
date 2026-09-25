@@ -12,14 +12,14 @@ from sklearn.linear_model import QuantileRegressor
 from sklearn.linear_model import Ridge
 
 
-def _ensure_gid_index(
-    predictors_df: pd.DataFrame, gid_col: str = "GID_2"
+def _ensure_geo_index(
+    predictors_df: pd.DataFrame, geo_col: str = "GID_2"
 ) -> pd.DataFrame:
-    if predictors_df.index.name == gid_col:
+    if predictors_df.index.name == geo_col:
         return predictors_df
-    if gid_col in predictors_df.columns:
-        return predictors_df.set_index(gid_col)
-    raise ValueError(f"predictors_df must have index or column named '{gid_col}'.")
+    if geo_col in predictors_df.columns:
+        return predictors_df.set_index(geo_col)
+    raise ValueError(f"predictors_df must have index or column named '{geo_col}'.")
 
 
 def _align_embeddings(
@@ -41,7 +41,7 @@ def _prepare_fit_table(
     train_mask: Optional[pd.Series] = None,
     cutoff_date: Optional[pd.Timestamp] = None,
 ) -> pd.DataFrame:
-    date_col, gid_col, yhat_col = use_cols
+    date_col, geo_col, yhat_col = use_cols
     if train_mask is not None:
         dfm = dfm[train_mask.values].copy()
     if cutoff_date is not None:
@@ -75,11 +75,11 @@ class AdapterBase:
     def __init__(
         self,
         predictors_df: pd.DataFrame,
-        gid_col: str = "GID_2",
+        geo_col: str = "GID_2",
         standardize_y: bool = False,
     ):
-        self.predictors_raw = _ensure_gid_index(predictors_df, gid_col=gid_col)
-        self.gid_col = gid_col
+        self.predictors_raw = _ensure_geo_index(predictors_df, geo_col=geo_col)
+        self.geo_col = geo_col
         self.standardize_y = standardize_y
 
         self._space: Optional[_EmbeddingSpace] = None
@@ -102,14 +102,14 @@ class AdapterBase:
             df["prediction"] = transform(df["prediction"])
 
         dfm = _prepare_fit_table(df, use_cols, y_col, train_mask, cutoff_date)
-        gid_order = sorted(dfm[self.gid_col].unique().tolist())
+        gid_order = sorted(dfm[self.geo_col].unique().tolist())
         X_raw, _ = _align_embeddings(self.predictors_raw, gid_order)
 
         X = X_raw
 
         # one row per timepoint: replicate per gid embedding to match residual rows
         gid_to_idx = {g: i for i, g in enumerate(gid_order)}
-        idxs = dfm[self.gid_col].map(gid_to_idx)
+        idxs = dfm[self.geo_col].map(gid_to_idx)
         idxs = np.asarray(idxs.astype(int))
         X_fit = X[idxs]  # (T_total, D)
         y = dfm["residual"].to_numpy(np.float32)  # (T_total,)
@@ -142,7 +142,7 @@ class AdapterBase:
             i = self._space.gid_order.index(gid)
         except ValueError:
             raise ValueError(
-                f"GID_2={gid} unknown to adapter; was it included during fit?"
+                f"{self.geo_col}={gid} unknown to adapter; was it included during fit?"
             )
         x = self._space.X[i : i + 1]  # (1,D)
         pred = self._predict_impl(x)[0]
@@ -154,12 +154,12 @@ class AdapterBase:
         self,
         pred_df: pd.DataFrame,
         date_col: str = "Date",
-        gid_col: str = "GID_2",
+        geo_col: str = "GID_2",
         pred_col: str = "prediction",
         out_col: str = "prediction",
     ) -> pd.DataFrame:
         """
-        Adds per-GID bias to ALL rows (works for per-sample long DataFrames too).
+        Adds per-geo bias to ALL rows (works for per-sample long DataFrames too).
         """
         if not self._fitted:
             logging.warning(
@@ -172,7 +172,7 @@ class AdapterBase:
         # vectorized: map gid->bias
         map_bias = {g: self.bias_for_gid(g) for g in self._space.gid_order}
         out = pred_df
-        out[out_col] = out[pred_col] + out[gid_col].map(map_bias).astype(np.float32)
+        out[out_col] = out[pred_col] + out[geo_col].map(map_bias).astype(np.float32)
         return out
 
     # ---- subclass hooks ----
@@ -417,7 +417,7 @@ def _residual_regression_fit_and_apply(
             predictors_df=df_predictors,
             standardize_y=False,
             quantile=q,
-            gid_col=geo_col,
+            geo_col=geo_col,
             # alpha=base_alpha / (q * (1 - q)),  # tails need more regularisation
         )
     elif adapter is None:
@@ -463,7 +463,7 @@ def _residual_regression_fit_and_apply(
             continue
 
         pred_df_corrected = adapter.apply(
-            df_apply, out_col="prediction", gid_col=geo_col
+            df_apply, out_col="prediction", geo_col=geo_col
         )
         df_apply.loc[:, "prediction"] = pred_df_corrected["prediction"]
         out_slices.append(df_apply)
@@ -520,13 +520,13 @@ def residual_regression(
             predictors_df=df_predictors,
             standardize_y=False,
             alpha=2.0,
-            gid_col=geo_col,
+            geo_col=geo_col,
         )
     elif method == "mlp":
         adapter = MLPAdapter(
             predictors_df=df_predictors,
             standardize_y=False,
-            gid_col=geo_col,
+            geo_col=geo_col,
         )
     elif method == "pinball":
         # Build per quantile loop
