@@ -12,8 +12,8 @@ geo and covariate merges run once rather than once per cutoff.
 from thucia.core import run_backtest, BacktestConfig
 
 result = run_backtest(
-    inputs,                       # prepared model inputs
-    cfg,                          # a PipelineConfig
+    inputs,  # prepared model inputs
+    cfg,  # a PipelineConfig
     BacktestConfig(
         model_name="baseline",
         reference_model="baseline",
@@ -22,8 +22,8 @@ result = run_backtest(
     ),
 )
 
-print(result.summary)   # per-horizon mean WIS / RMSE / R2 / n (+ skill)
-print(result.scores)    # per (cutoff, GID_2, Date, horizon) rows
+print(result.summary)  # per-horizon mean WIS / RMSE / R2 / n (+ skill)
+print(result.scores)  # per (cutoff, GID_2, Date, horizon) rows
 ```
 
 ## BacktestConfig
