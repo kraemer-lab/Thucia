@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from thucia.core.geo import add_incidence_rate
 from thucia.core.geo import align_admin2_regions
+from thucia.core.geo import attach_geo_attributes
 from thucia.core.geo import ensure_all_regions
 from thucia.core.geo import fuzzy_match_one
 from thucia.core.geo import remove_accents
@@ -221,3 +222,91 @@ def test_merge_sources_calls_plugin(admin2_list):
     assert seen["iso3"] == "XX"
     assert seen["polygons"] is regions
     assert seen["use_cache"] is True
+
+
+@pytest.fixture
+def regions_map():
+    return pd.DataFrame(
+        {
+            "analysis_district_id": ["010101", "010102", "010201"],
+            "province_ubigeo": ["0101", "0101", "0102"],
+            "department_code": ["01", "01", "02"],
+            "district_name": ["A", "B", "C"],
+        }
+    )
+
+
+def test_attach_geo_attributes_aliases_key_and_parent(regions_map):
+    df = pd.DataFrame({"district_id": ["010101", "010201"], "Cases": [1, 2]})
+    out = attach_geo_attributes(
+        df,
+        regions_map,
+        geo_col="district_id",
+        region_col="analysis_district_id",
+        geo_parent="province_ubigeo",
+        extra_cols=["department_code"],
+    )
+    assert out["province_ubigeo"].tolist() == ["0101", "0102"]
+    assert out["department_code"].tolist() == ["01", "02"]
+    assert out["Cases"].tolist() == [1, 2]  # untouched
+    assert "geometry" not in out.columns
+
+
+def test_attach_geo_attributes_extra_cols_mapping(regions_map):
+    df = pd.DataFrame({"district_id": ["010101"]})
+    out = attach_geo_attributes(
+        df,
+        regions_map,
+        geo_col="district_id",
+        region_col="analysis_district_id",
+        extra_cols={"department_code": "adm1_name"},
+    )
+    assert out["adm1_name"].tolist() == ["01"]
+
+
+def test_attach_geo_attributes_replaces_existing_target(regions_map):
+    df = pd.DataFrame({"district_id": ["010101"], "province_ubigeo": ["WRONG"]})
+    out = attach_geo_attributes(
+        df,
+        regions_map,
+        geo_col="district_id",
+        region_col="analysis_district_id",
+        geo_parent="province_ubigeo",
+    )
+    assert out["province_ubigeo"].tolist() == ["0101"]
+
+
+def test_attach_geo_attributes_unmatched(regions_map):
+    df = pd.DataFrame({"district_id": ["010101", "999999"]})
+    with pytest.raises(ValueError, match="absent from the regions map"):
+        attach_geo_attributes(
+            df,
+            regions_map,
+            geo_col="district_id",
+            region_col="analysis_district_id",
+            geo_parent="province_ubigeo",
+        )
+    out = attach_geo_attributes(
+        df,
+        regions_map,
+        geo_col="district_id",
+        region_col="analysis_district_id",
+        geo_parent="province_ubigeo",
+        require_match=False,
+    )
+    assert out["province_ubigeo"].isna().sum() == 1
+
+
+def test_attach_geo_attributes_preserves_categorical(regions_map):
+    df = pd.DataFrame({"district_id": ["010101", "010201"]})
+    df["district_id"] = df["district_id"].astype("category")
+    out = attach_geo_attributes(
+        df, regions_map, geo_col="district_id", region_col="analysis_district_id"
+    )
+    assert isinstance(out["district_id"].dtype, pd.CategoricalDtype)
+
+
+def test_attach_geo_attributes_noop_without_targets(regions_map):
+    df = pd.DataFrame({"district_id": ["010101"], "Cases": [1]})
+    out = attach_geo_attributes(df, regions_map, geo_col="district_id")
+    pd.testing.assert_frame_equal(out, df)

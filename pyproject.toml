@@ -43,6 +43,11 @@ dev = [
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
 ]
+# Reading wide, pre-aggregated case panels (e.g. R `.rds` data.frames) via
+# thucia.core.panels.read_rds.
+panels = [
+    "rdata>=1.1.0",
+]
 chronos = [
     "chronos-forecasting>=2.1.0",
 ]
@@ -54,6 +59,7 @@ all = [
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
+    "rdata>=1.1.0",
 ]
 
 [tool.setuptools_scm]

@@ -21,6 +21,27 @@ flowchart LR
     H --> I[apply_residual_regression]
 ```
 
+## Pre-aggregated panels
+
+When cases arrive already aggregated to one row per (region, period) with
+covariates attached, skip `cases_per_period`/`merge_covariates` and build the
+model-input frame directly:
+
+- `panel_to_frame(df, ...)` (`thucia.core.panels`) maps the panel onto the
+  pipeline schema (`Date`, geo columns, `Cases`, `future`, covariates). Name the
+  time axis with `date_col`, or with `index_col` + `anchor` (1-based integer
+  periods, for irregular source calendars such as epi weeks with week 53).
+- `attach_geo_attributes(df, regions, ...)` (`thucia.core.geo`) joins parent and
+  extra admin attributes from a shapefile or roster onto the observed rows — the
+  enrichment counterpart to `ensure_all_regions` (which pads only).
+- `ensure_complete_grid(df, ...)` (`thucia.core.cases`) makes or prunes the full
+  `(Date, geo)` grid. It **drops** geo units with a missing period or NA outcome
+  by default (never fabricating cases); pass `drop_incomplete=False` for the
+  zero-fill convention.
+- `read_rds(path)` loads an R `.rds`/`.rda` data.frame (needs the `panels` extra).
+
+Then feed the result to `prepare_model_inputs` as usual.
+
 ## Stages
 
 ```{list-table}

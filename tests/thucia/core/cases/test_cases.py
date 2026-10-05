@@ -1,7 +1,9 @@
 import pandas as pd
+import pytest
 from thucia.core.cases import aggregate_cases
 from thucia.core.cases import align_date_types
 from thucia.core.cases import cases_per_month
+from thucia.core.cases import ensure_complete_grid
 
 
 def test_cases_per_month_fills_zeros():
@@ -110,3 +112,62 @@ def test_align_date_types_datetime():
     assert isinstance(aligned, pd.Period)
     assert not isinstance(aligned, pd.Timestamp)
     assert not isinstance(aligned, pd.Series)
+
+
+def _grid_df():
+    return pd.DataFrame(
+        {
+            "GID_2": ["A", "A", "A", "B", "B"],
+            "Date": pd.PeriodIndex(
+                ["2020-01", "2020-02", "2020-03", "2020-01", "2020-03"], freq="M"
+            ),
+            "Cases": [1, 2, 3, 4, 5],
+        }
+    )
+
+
+def test_ensure_complete_grid_zero_fill():
+    out = ensure_complete_grid(_grid_df(), drop_incomplete=False)
+    assert len(out) == 6  # A x 3 months + B x 3 months
+    b_feb = out[(out["GID_2"] == "B") & (out["Date"] == pd.Period("2020-02", "M"))]
+    assert b_feb["Cases"].iloc[0] == 0
+    # Observed values preserved
+    a_jan = out[(out["GID_2"] == "A") & (out["Date"] == pd.Period("2020-01", "M"))]
+    assert a_jan["Cases"].iloc[0] == 1
+
+
+def test_ensure_complete_grid_drops_incomplete_by_default():
+    out = ensure_complete_grid(_grid_df())  # drop_incomplete=True
+    assert set(out["GID_2"]) == {"A"}  # B is missing 2020-02
+    assert len(out) == 3
+    assert str(out["Date"].dtype) == "period[M]"
+
+
+def test_ensure_complete_grid_drops_na_outcome_units():
+    df = _grid_df()
+    # Give B all three months but a NA outcome -> still incomplete.
+    df = pd.concat(
+        [
+            df,
+            pd.DataFrame(
+                {
+                    "GID_2": ["B"],
+                    "Date": pd.PeriodIndex(["2020-02"], freq="M"),
+                    "Cases": [float("nan")],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    out = ensure_complete_grid(df)
+    assert set(out["GID_2"]) == {"A"}
+    assert out["Cases"].notna().all()
+
+
+def test_ensure_complete_grid_requires_period_or_freq():
+    df = _grid_df()
+    df["Date"] = df["Date"].dt.to_timestamp()
+    with pytest.raises(ValueError, match="pass freq="):
+        ensure_complete_grid(df)
+    out = ensure_complete_grid(df, freq="M")
+    assert set(out["GID_2"]) == {"A"}

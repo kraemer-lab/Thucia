@@ -165,6 +165,97 @@ def aggregate_cases(
     return DataFrame(df=result)
 
 
+def ensure_complete_grid(
+    df,
+    *,
+    geo_col: str = "GID_2",
+    date_col: str = "Date",
+    case_col: str = "Cases",
+    drop_incomplete: bool = True,
+    fill: float = 0,
+    fill_cols: list[str] | None = None,
+    freq: str | None = None,
+) -> pd.DataFrame:
+    """Complete (or prune) the ``(date_col, geo_col)`` grid for a case/panel frame.
+
+    The pipeline requires every ``(Date, geo)`` combination to be present. A
+    wide, pre-aggregated panel may instead have gaps (a period with no row, or a
+    missing/NA outcome) — and a missing outcome is *not* a zero case.
+
+    - ``drop_incomplete=True`` (default): remove any ``geo_col`` unit that is
+      missing at least one period, or that has any NA ``case_col``. No case is
+      ever fabricated.
+    - ``drop_incomplete=False``: build the full cartesian grid, left-join the
+      data, and fill the missing ``case_col`` with ``fill`` (the pipeline's 0
+      convention). ``fill_cols`` names per-geo descriptive columns to broadcast
+      across the completed rows.
+
+    ``date_col`` must be a Period column (or datetimes, with ``freq`` given).
+    Returns a pandas DataFrame.
+    """
+    if isinstance(df, DataFrame):
+        df = df.df
+    else:
+        df = df.copy()
+    for col in (geo_col, date_col, case_col):
+        if col not in df.columns:
+            raise ValueError(f"DataFrame must contain '{col}' column.")
+
+    if not isinstance(df[date_col].dtype, pd.PeriodDtype):
+        if freq is None:
+            raise ValueError(
+                f"'{date_col}' is not a Period column; pass freq= to convert "
+                "(e.g. 'W-SAT' or 'M')."
+            )
+        df[date_col] = pd.to_datetime(df[date_col]).dt.to_period(freq)
+    period_freq = df[date_col].dtype.freq
+    full_dates = pd.period_range(
+        df[date_col].min(), df[date_col].max(), freq=period_freq
+    )
+    n_dates = len(full_dates)
+
+    counts = df.groupby(geo_col, observed=False)[date_col].nunique()
+    has_na = (
+        df.assign(**{"_na": df[case_col].isna()})
+        .groupby(geo_col, observed=False)["_na"]
+        .any()
+    )
+    incomplete = set(counts[counts < n_dates].index) | set(has_na[has_na].index)
+
+    if drop_incomplete:
+        if incomplete:
+            logging.info(
+                f"Dropping {len(incomplete)} {geo_col} regions with an incomplete "
+                f"outcome series ({n_dates} periods expected)."
+            )
+        out = df[~df[geo_col].isin(incomplete)].copy()
+        result = out.reset_index(drop=True)
+        if result.empty:
+            raise ValueError(
+                "No geo units have a complete outcome series; nothing to model."
+            )
+    else:
+        geos = list(df[geo_col].dropna().unique())
+        grid = pd.DataFrame(
+            list(product(geos, full_dates)), columns=[geo_col, date_col]
+        )
+        result = grid.merge(df, on=[geo_col, date_col], how="left")
+        result[case_col] = result[case_col].fillna(fill)
+        for c in fill_cols or []:
+            if c in df.columns:
+                mapping = df.drop_duplicates(geo_col).set_index(geo_col)[c]
+                result[c] = result[geo_col].map(mapping)
+
+    was_categorical = isinstance(df[geo_col].dtype, pd.CategoricalDtype)
+    if was_categorical:
+        result[geo_col] = pd.Categorical(
+            result[geo_col].astype("object"),
+            categories=df[geo_col].cat.categories,
+            ordered=df[geo_col].cat.ordered,
+        )
+    return result.sort_values([date_col, geo_col]).reset_index(drop=True)
+
+
 def _filter_and_separate(df, pred_col, true_col, transform=None, df_filter: dict = {}):
     if df_filter is None:
         df_filter = {}

@@ -689,6 +689,96 @@ def ensure_all_regions(
     return out
 
 
+def attach_geo_attributes(
+    df,
+    regions,
+    *,
+    geo_col: str = "GID_2",
+    region_col: str | None = None,
+    geo_parent: str | None = None,
+    parent_col: str | None = None,
+    extra_cols=None,
+    require_match: bool = True,
+):
+    """Attach admin attributes from a regions map onto a case/panel frame.
+
+    Left-joins the attribute table of ``regions`` (a shapefile/GeoPackage path
+    or an in-memory (Geo)DataFrame) onto ``df`` by ``geo_col``. The map's key
+    column is named by ``region_col`` (defaults to ``geo_col``); its parent code
+    column is named by ``parent_col`` (defaults to ``geo_parent``) and is
+    emitted under ``geo_parent``. ``extra_cols`` names further attribute columns
+    to carry (a sequence of names kept as-is, or a mapping source->output).
+
+    This is the attribute-enrichment counterpart to ``ensure_all_regions``,
+    which only pads missing regions (filling parents on the padded rows). Here
+    parent/other attributes are attached onto the *observed* rows. Any existing
+    columns that share a target name are replaced. When ``require_match`` is
+    set, every observed ``geo_col`` must appear in the map (else ``ValueError``).
+    """
+    if isinstance(df, DataFrame):
+        df = df.df
+    if geo_col not in df.columns:
+        raise ValueError(f"DataFrame must contain '{geo_col}' column.")
+
+    if geo_parent is None and parent_col is None and not extra_cols:
+        return df.copy()
+
+    gdf = _load_regions_gdf(regions, region_col, geo_col)
+    if gdf is None:
+        raise ValueError("attach_geo_attributes requires a regions map.")
+
+    rename: dict[str, str] = {}
+    targets: list[str] = []
+    if geo_parent is not None:
+        src = parent_col or geo_parent
+        if src not in gdf.columns:
+            raise ValueError(
+                f"Region map has no parent column '{src}'; pass parent_col= naming it."
+            )
+        rename[src] = geo_parent
+        targets.append(geo_parent)
+    if isinstance(extra_cols, dict):
+        extra_map = dict(extra_cols)
+    elif extra_cols is not None:
+        extra_map = {c: c for c in extra_cols}
+    else:
+        extra_map = {}
+    for src, dst in extra_map.items():
+        if src not in gdf.columns:
+            raise ValueError(f"Region map has no column '{src}' (extra_cols).")
+        rename[src] = dst
+        targets.append(dst)
+
+    attrs = gdf.rename(columns=rename)[[geo_col, *targets]].drop_duplicates(geo_col)
+
+    observed = set(df[geo_col].dropna().astype("object"))
+    unmatched = sorted(observed - set(attrs[geo_col].astype("object")))
+    if unmatched:
+        if require_match:
+            raise ValueError(
+                f"{len(unmatched)} {geo_col} values are absent from the regions "
+                f"map (e.g. {unmatched[:5]}); check region_col/{geo_col} codes."
+            )
+        logging.warning(
+            f"{len(unmatched)} {geo_col} values are absent from the regions map; "
+            "their attributes will be NaN."
+        )
+
+    was_categorical = isinstance(df[geo_col].dtype, pd.CategoricalDtype)
+    categories = df[geo_col].cat.categories if was_categorical else None
+    ordered = df[geo_col].cat.ordered if was_categorical else False
+
+    # The map is authoritative for the target columns.
+    out = df.drop(columns=[c for c in targets if c in df.columns]).merge(
+        attrs, on=geo_col, how="left", validate="m:1"
+    )
+    if was_categorical:
+        out[geo_col] = pd.Categorical(
+            out[geo_col].astype("object"), categories=categories, ordered=ordered
+        )
+    return out
+
+
 def merge_sources(
     df,
     covars: list[str],

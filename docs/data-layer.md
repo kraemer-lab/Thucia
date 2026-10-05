@@ -93,6 +93,22 @@ back = read_nc("cases.nc")          # Period Date column restored
 `write_nc` / `write_zarr` accept either a pandas DataFrame or an xarray
 Dataset.
 
+## R data frames (`.rds` / `.rda`)
+
+Pre-aggregated panels are sometimes shared as R data.frames. `read_rds` loads
+one into a pandas DataFrame using the optional `rdata` package (install with
+`pip install thucia[panels]`):
+
+```python
+from thucia.core import read_rds
+
+panel = read_rds("cases_panel.rds")     # -> pandas DataFrame
+```
+
+When the file holds several named objects, pass `name=` to pick one. See
+{doc}`pipeline` for `panel_to_frame`, which maps such a panel onto the pipeline
+schema.
+
 ## Where files live
 
 Downloads and derived caches are stored under the platform cache folder, which

@@ -91,3 +91,31 @@ The first time you merge a covariate for a new country or period, Thucia
 downloads the relevant data. This is why the WorldClim merge is the slowest
 stage of the pipeline on a cold cache.
 ```
+
+## Attaching admin attributes
+
+`ensure_all_regions` reads a region map (`PipelineConfig.regions` /
+`ensure_all_regions(regions=...)`) to know the full roster, but it only writes
+parent codes onto the **padded** zero-case rows. To enrich the **observed** rows
+of a case or panel frame — for example to turn district names into the
+`geo_parent` code column and an `adm1` filter list the models need — use
+`attach_geo_attributes`:
+
+```python
+from thucia.core.geo import attach_geo_attributes
+
+df = attach_geo_attributes(
+    df,
+    "data/cases/PER/districts.gpkg",   # path or in-memory (Geo)DataFrame
+    geo_col="district_id",
+    region_col="analysis_district_id", # map's key column, if named differently
+    geo_parent="province_ubigeo",      # output parent column
+    extra_cols={"department_code": "adm1"},
+    require_match=True,                # raise on unmatched codes
+)
+```
+
+The map's attribute table (geometry excluded) is left-joined by `geo_col`;
+existing target columns are replaced and a categorical geo column keeps its
+dtype. With `require_match=False` unmatched codes warn and receive `NaN`
+attributes instead of raising.
