@@ -106,12 +106,12 @@ from thucia.core.geo import attach_geo_attributes
 
 df = attach_geo_attributes(
     df,
-    "data/cases/PER/districts.gpkg",   # path or in-memory (Geo)DataFrame
+    "data/cases/PER/districts.gpkg",  # path or in-memory (Geo)DataFrame
     geo_col="district_id",
-    region_col="analysis_district_id", # map's key column, if named differently
-    geo_parent="province_ubigeo",      # output parent column
+    region_col="analysis_district_id",  # map's key column, if named differently
+    geo_parent="province_ubigeo",  # output parent column
     extra_cols={"department_code": "adm1"},
-    require_match=True,                # raise on unmatched codes
+    require_match=True,  # raise on unmatched codes
 )
 ```
 
