@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from thucia.core.pipeline import aggregate_quantiles
+from thucia.core.pipeline import apply_residual_quantiles
 from thucia.core.pipeline import apply_residual_regression
 from thucia.core.pipeline import build_ensemble
 from thucia.core.pipeline import cases_per_period
@@ -454,3 +455,115 @@ def test_apply_residual_regression():
     )
     assert len(out) == len(df)
     assert out["prediction"].notna().all()
+
+
+def _point_forecast(n_dates=30, n_geo=2, bias=2.0, noise=1.0, seed=0):
+    """A flat median forecast whose truth sits ~``bias`` above it.
+
+    ``noise`` varies the residuals so the empirical quantiles differ (a constant
+    residual would produce a shifted but zero-width distribution).
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.period_range("2020-01", periods=n_dates, freq="M")
+    rows = []
+    for d in dates:
+        for g in [f"G{i}" for i in range(n_geo)]:
+            rows.append(
+                {
+                    "Date": d,
+                    "GID_2": g,
+                    "horizon": 1,
+                    "quantile": 0.5,
+                    "prediction": 5.0,
+                    "Cases": 5.0 + bias + float(rng.normal(0, noise)),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_apply_residual_quantiles_spreads_point_forecast():
+    df = _point_forecast()
+    out = apply_residual_quantiles(
+        df, PipelineConfig(path=".", residual_min_history=5), geo_col="GID_2"
+    )
+    # One row per (date, geo, canonical level).
+    assert out["quantile"].nunique() == 15
+    assert len(out) == len(df) * 15
+    # Input is left untouched: the quantile step log1p's its input in place.
+    assert df["prediction"].max() == 5.0
+    assert df["quantile"].nunique() == 1
+
+
+def test_apply_residual_quantiles_is_causal_and_monotone():
+    df = _point_forecast()
+    out = apply_residual_quantiles(
+        df, PipelineConfig(path=".", residual_min_history=5), geo_col="GID_2"
+    )
+    dates = sorted(out["Date"].unique())
+
+    # No history before the first date: every level repeats the point forecast.
+    first = out[(out["Date"] == dates[0]) & (out["GID_2"] == "G0")]
+    assert first["prediction"].nunique() == 1
+
+    # Later dates carry a spread, and the levels never cross.
+    late = out[(out["Date"] == dates[-1]) & (out["GID_2"] == "G0")]
+    late = late.sort_values("quantile")
+    assert late["prediction"].nunique() > 1
+    assert (late["prediction"].diff().dropna() >= -1e-9).all()
+    # Residuals are positive on average, so the median is corrected upwards
+    # (the spread widens around it rather than shifting the whole distribution).
+    median = late.loc[late["quantile"] == 0.5, "prediction"].iloc[0]
+    assert median > 5.0
+
+
+def test_apply_residual_quantiles_min_history_bounds_the_spread():
+    df = _point_forecast(n_dates=4)
+    out = apply_residual_quantiles(
+        df, PipelineConfig(path=".", residual_min_history=100), geo_col="GID_2"
+    )
+    widths = out.pivot_table(
+        index=["Date", "GID_2"], columns="quantile", values="prediction", observed=True
+    )
+    # Not enough residuals anywhere: every row stays a degenerate distribution.
+    assert ((widths.max(axis=1) - widths.min(axis=1)) == 0).all()
+
+
+def test_apply_residual_quantiles_pooling_tracks_sparse_regions():
+    df = _point_forecast(n_dates=10, n_geo=2)
+    cfg = PipelineConfig(
+        path=".",
+        residual_min_history=10,
+        residual_pool_across_gids=True,
+    )
+    pooled = apply_residual_quantiles(df, cfg, geo_col="GID_2")
+    cfg_no_pool = PipelineConfig(
+        path=".",
+        residual_min_history=10,
+        residual_pool_across_gids=False,
+    )
+    unpooled = apply_residual_quantiles(df, cfg_no_pool, geo_col="GID_2")
+
+    def last_width(frame):
+        last = frame[frame["Date"] == frame["Date"].max()]
+        w = last.pivot_table(
+            index="GID_2", columns="quantile", values="prediction", observed=True
+        )
+        return float((w.max(axis=1) - w.min(axis=1)).mean())
+
+    # Each region has 9 residuals of its own (min_history=10) but the pooled
+    # history reaches 10 after 5 dates, so pooling produces a spread sooner.
+    assert last_width(pooled) > 0
+    assert last_width(unpooled) == 0
+
+
+def test_apply_residual_quantiles_rejects_multi_level_frames():
+    df = _point_forecast(n_dates=3, n_geo=1)
+    multi = pd.concat(
+        [
+            df.assign(quantile=q, prediction=df["prediction"] + q)
+            for q in (0.1, 0.5, 0.9)
+        ],
+        ignore_index=True,
+    )
+    with pytest.raises(ValueError, match="single-level"):
+        apply_residual_quantiles(multi, PipelineConfig(path="."), geo_col="GID_2")

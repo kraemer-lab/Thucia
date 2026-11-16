@@ -100,5 +100,16 @@ class PipelineConfig:
     # all non-base columns of the input are treated as covariates.
     lag_spec: Optional[list[dict[str, Any]]] = None
 
+    # Post-hoc residual quantiles (`apply_residual_quantiles`): turn a
+    # single-level (median) forecast into the canonical quantile grid from the
+    # empirical quantiles of past forecast errors. `residual_quantile_window`
+    # None uses an expanding residual history (an integer keeps the most recent
+    # N residuals per buffer); `residual_min_history` residuals are required
+    # before a spread is emitted, and regions short of it borrow the pooled
+    # cross-region history when `residual_pool_across_gids` is set.
+    residual_quantile_window: Optional[int] = None
+    residual_min_history: int = 20
+    residual_pool_across_gids: bool = True
+
     def __post_init__(self) -> None:
         self.path = Path(self.path)

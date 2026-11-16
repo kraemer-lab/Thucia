@@ -4,6 +4,7 @@ from thucia.core.pipeline.config import PipelineConfig
 from thucia.core.pipeline.provenance import code_document
 from thucia.core.pipeline.provenance import verify_code_identity
 from thucia.core.pipeline.stages import aggregate_quantiles
+from thucia.core.pipeline.stages import apply_residual_quantiles
 from thucia.core.pipeline.stages import apply_residual_regression
 from thucia.core.pipeline.stages import build_ensemble
 from thucia.core.pipeline.stages import cases_per_period
@@ -17,6 +18,7 @@ __all__ = [
     "ModelSelection",
     "PipelineConfig",
     "aggregate_quantiles",
+    "apply_residual_quantiles",
     "apply_residual_regression",
     "build_ensemble",
     "cases_per_period",
