@@ -40,6 +40,7 @@ from thucia.core.models.ensemble import create_ensemble
 from thucia.core.models.utils import sanitise_covariates
 from thucia.core.models.utils.adapter import residual_regression
 from thucia.core.models.utils.covariates import build_features
+from thucia.core.models.utils.residual_quantiles import add_residual_quantiles
 
 from .config import PipelineConfig
 from .provenance import check_expected_code
@@ -457,3 +458,49 @@ def apply_residual_regression(
         geo_col=geo_col,
         horizons=horizons or config.horizons,
     )
+
+
+def apply_residual_quantiles(
+    df_forecast: pd.DataFrame,
+    config: PipelineConfig,
+    *,
+    geo_col: str | None = None,
+    db_file: str | Path | None = None,
+) -> pd.DataFrame:
+    """Spread a point (median) forecast into the canonical quantile grid.
+
+    The counterpart to :func:`apply_residual_regression` for models that emit no
+    spread at all (e.g. a foundation checkpoint fitted with ``median_only=True``):
+    the distribution is built from the empirical quantiles of the forecast's own
+    past errors. The pass is causal — at each date the residual history holds
+    only earlier errors — so the result is out-of-sample with respect to the
+    correction itself.
+
+    ``config`` supplies the behaviour: ``residual_quantile_window`` (None keeps
+    an expanding history), ``residual_min_history`` and
+    ``residual_pool_across_gids``. Regions that have not yet accumulated
+    ``residual_min_history`` residuals fall back to the point forecast at every
+    level (a degenerate distribution) unless the pooled cross-region history is
+    long enough.
+
+    ``df_forecast`` must be single-level; a multi-level frame is rejected because
+    per-level predictions cannot be attributed to the residual history.
+    """
+    if "quantile" in df_forecast.columns and df_forecast["quantile"].nunique() > 1:
+        raise ValueError(
+            "apply_residual_quantiles expects a single-level (point) forecast; "
+            f"got {df_forecast['quantile'].nunique()} quantile levels. Use "
+            "apply_residual_regression to correct an existing distribution."
+        )
+    spread = add_residual_quantiles(
+        # The quantile step log1p-transforms its input in place.
+        df_forecast.copy(),
+        date_col="Date",
+        geo_col=geo_col or config.geo_col,
+        horizon_col="horizon",
+        window=config.residual_quantile_window,
+        min_history=config.residual_min_history,
+        pool_across_gids_if_sparse=config.residual_pool_across_gids,
+        db_file=str(db_file) if db_file is not None else None,
+    )
+    return spread.df if hasattr(spread, "df") else spread
