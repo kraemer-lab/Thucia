@@ -9,7 +9,7 @@ List the available models and resolve one by name:
 ```python
 from thucia.core import list_models, get_model
 
-print(list_models())       # all advertised model names
+print(list_models())  # all advertised model names
 model = get_model("sarima")  # resolve the callable
 ```
 
@@ -114,8 +114,8 @@ Two ways to choose what they emit:
 
 ```python
 # a subset of the pre-trained grid
-fit_model(df, "timesfm3", config, ...)        # honours config.quantiles
-PipelineConfig(quantiles=[0.1, 0.5, 0.9])      # subset request
+fit_model(df, "timesfm3", config, ...)  # honours config.quantiles
+PipelineConfig(quantiles=[0.1, 0.5, 0.9])  # subset request
 
 # or a deterministic median only (a single 0.5 component)
 PipelineConfig(median_only=True)
@@ -132,8 +132,8 @@ Covariates are routed per column:
 
 ```python
 PipelineConfig(
-    past_covariate_cols=None,             # None -> every covariate (default)
-    future_covariate_cols="all",          # also pass them as future-known covariates
+    past_covariate_cols=None,  # None -> every covariate (default)
+    future_covariate_cols="all",  # also pass them as future-known covariates
 )
 ```
 
@@ -197,7 +197,7 @@ selections = [
     ModelSelection("baseline", label="baseline_raw", params={"symmetrize": False}),
 ]
 
-fits = fit_models(prepared_inputs, selections, config)   # {label: quantile frame}
+fits = fit_models(prepared_inputs, selections, config)  # {label: quantile frame}
 ```
 
 - **`overrides`** are `PipelineConfig` field names applied for this model only;
