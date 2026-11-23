@@ -28,12 +28,12 @@ DuckDB table** — columns, index subsets, and boolean filters are pushed down a
 SQL rather than materialising the whole frame in memory.
 
 ```python
-tdf["Log_Cases"]                 # SELECT one column (lazy)
-tdf[["GID_2", "Cases"]]          # SELECT a subset of columns
-tdf.head(10)                     # first rows
-tdf.query("Cases > 100")         # arbitrary SQL filter
-len(tdf)                         # SELECT COUNT(*)
-tdf.columns                      # column names
+tdf["Log_Cases"]  # SELECT one column (lazy)
+tdf[["GID_2", "Cases"]]  # SELECT a subset of columns
+tdf.head(10)  # first rows
+tdf.query("Cases > 100")  # arbitrary SQL filter
+len(tdf)  # SELECT COUNT(*)
+tdf.columns  # column names
 
 # Materialise the whole table as a pandas DataFrame (restores Period dtypes).
 pandas_df = tdf.df
@@ -59,7 +59,7 @@ already stored and the ones in the incoming frame, so geo columns can grow
 across append pieces:
 
 ```python
-tdf.append(new_rows)   # geo ENUM automatically extends to the new codes
+tdf.append(new_rows)  # geo ENUM automatically extends to the new codes
 ```
 
 The geo categoricals are decoded back to strings for the `INSERT` — DuckDB
@@ -72,7 +72,7 @@ names are exposed under the logical names you ask for, without any rename:
 
 ```python
 tdf = read_db("my_run/cases", geo_col="region", geo_parent="state")
-tdf.columns             # ['Date', 'state', 'region', 'Cases']
+tdf.columns  # ['Date', 'state', 'region', 'Cases']
 ```
 
 Pass `migrate=True` (DuckDB only) to physically rename the stored columns; for
@@ -92,7 +92,7 @@ rows) and `environment` (python version, platform, timestamp).
 from thucia.core import read_run_metadata, read_db
 
 docs = read_run_metadata("my_run/sarima52_cases_quantiles.duckdb")
-docs["selection"]["overrides"]     # {'retrain': True, 'season_length': 52}
+docs["selection"]["overrides"]  # {'retrain': True, 'season_length': 52}
 read_db("my_run/sarima52_cases_quantiles.duckdb").metadata == docs
 ```
 
@@ -142,8 +142,8 @@ verify_code_identity(read_run_metadata("my_run/forecast.duckdb"))  # {} == ident
 
 ```python
 fit_model(df, "baseline", config, expect="my_run/baseline_cases_quantiles.duckdb")
-fit_model(df, "baseline", config, expect_commit="2fb8b62")   # clean tree required
-fit_model(df, "baseline", config, expect_version="0.2.0")    # registry installs
+fit_model(df, "baseline", config, expect_commit="2fb8b62")  # clean tree required
+fit_model(df, "baseline", config, expect_version="0.2.0")  # registry installs
 ```
 
 `expect_commit` raises for an install that carries no commit (a wheel) rather
@@ -158,7 +158,7 @@ preserve period columns automatically:
 from thucia.core import write_nc, read_nc, write_zarr, read_zarr
 
 write_nc(df, "cases.nc")
-back = read_nc("cases.nc")          # Period Date column restored
+back = read_nc("cases.nc")  # Period Date column restored
 ```
 
 `write_nc` / `write_zarr` accept either a pandas DataFrame or an xarray
@@ -173,7 +173,7 @@ one into a pandas DataFrame using the optional `rdata` package (install with
 ```python
 from thucia.core import read_rds
 
-panel = read_rds("cases_panel.rds")     # -> pandas DataFrame
+panel = read_rds("cases_panel.rds")  # -> pandas DataFrame
 ```
 
 When the file holds several named objects, pass `name=` to pick one. See
